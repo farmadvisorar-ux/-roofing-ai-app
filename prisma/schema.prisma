@@ -1,0 +1,115 @@
+// Prisma schema for the roofing/shed AR + CRM app.
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUOTED
+  NEGOTIATING
+  WON
+  LOST
+}
+
+enum LeadSource {
+  CONFIGURATOR
+  AR_VIEWER
+  MANUAL
+  PHONE
+  REFERRAL
+}
+
+enum ContractType {
+  CASH
+  FINANCE
+  RENT_TO_OWN
+}
+
+enum ContractStatus {
+  DRAFT
+  SENT
+  SIGNED
+  VOID
+}
+
+enum RoofStyle {
+  GABLE
+  LEAN_TO
+  GAMBREL
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  city      String?
+  state     String?
+  zip       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leads Lead[]
+}
+
+model Lead {
+  id             String     @id @default(cuid())
+  contactId      String
+  contact        Contact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  stage          LeadStage  @default(NEW)
+  source         LeadSource @default(CONFIGURATOR)
+  estimatedValue Float      @default(0)
+  notes          String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  shedConfig ShedConfig?
+  contracts  Contract[]
+}
+
+model ShedConfig {
+  id          String    @id @default(cuid())
+  leadId      String?   @unique
+  lead        Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  widthFt     Float
+  lengthFt    Float
+  wallHeightFt Float
+  roofStyle   RoofStyle @default(GABLE)
+  roofPitch   Float     @default(4)
+  sidingColor String    @default("#c9c2b4")
+  trimColor   String    @default("#ffffff")
+  roofColor   String    @default("#3a3f44")
+  doorCount   Int       @default(1)
+  doorWidthFt Float     @default(3)
+  windowCount Int       @default(2)
+  price       Float
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Contract {
+  id             String         @id @default(cuid())
+  leadId         String
+  lead           Lead           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type           ContractType
+  status         ContractStatus @default(DRAFT)
+  totalPrice     Float
+  downPayment    Float          @default(0)
+  apr            Float          @default(0)
+  termMonths     Int            @default(0)
+  monthlyPayment Float          @default(0)
+  signerName     String?
+  signatureData  String?
+  signedAt       DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
