@@ -2,6 +2,7 @@ import Link from "next/link";
 
 const NAV_LINKS = [
   { href: "/configurator", label: "Configurator" },
+  { href: "/map", label: "Canvass" },
   { href: "/crm", label: "CRM" },
 ];
 

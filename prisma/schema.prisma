@@ -25,6 +25,14 @@ enum LeadSource {
   MANUAL
   PHONE
   REFERRAL
+  CANVASSING
+}
+
+enum EnrichmentStatus {
+  PENDING
+  ENRICHED
+  PARTIAL
+  FAILED
 }
 
 enum ContractType {
@@ -74,6 +82,7 @@ model Lead {
 
   shedConfig ShedConfig?
   contracts  Contract[]
+  property   Property?
 }
 
 model ShedConfig {
@@ -112,4 +121,54 @@ model Contract {
   signedAt       DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+}
+
+/// A roof we might sell to, pinned on the canvassing map. Created from a map tap
+/// (often before we know anything about it), then filled in by the enrichment
+/// pipeline in src/lib/propertyEnrichment.ts from open data sources.
+model Property {
+  id  String @id @default(cuid())
+  lat Float
+  lng Float
+
+  // Reverse-geocoded address (OpenStreetMap / Nominatim).
+  address String?
+  city    String?
+  state   String?
+  zip     String?
+
+  // Ownership, from a county assessor / parcel open-data endpoint.
+  ownerName String?
+  parcelId  String?
+
+  // Building facts (OpenStreetMap buildings, via Overpass).
+  osmRef         String? @unique
+  footprintSqFt  Float?
+  buildingLevels Int?
+  roofShape      String?
+  roofMaterial   String?
+  yearBuilt      Int?
+
+  // Roof estimate derived from the facts above (src/lib/roofing.ts).
+  roofSqFt     Float?
+  roofSquares  Float?
+  estimateLow  Float?
+  estimateHigh Float?
+
+  enrichmentStatus  EnrichmentStatus @default(PENDING)
+  enrichmentSources String? // comma-separated provider ids that contributed
+  enrichmentError   String?
+  enrichedAt        DateTime?
+
+  notes String?
+
+  // Set once the property has been worked into the pipeline. Deleting the lead
+  // keeps the pin on the map — the roof still exists, it just isn't a lead now.
+  leadId String? @unique
+  lead   Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([lat, lng])
 }
