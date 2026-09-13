@@ -5,10 +5,16 @@
 // a third-party API call per address — and hail is the signal that decides which
 // roofs are worth knocking on.
 //
-//   npm run import:storms                  # last 10 years, hail + wind
-//   npm run import:storms -- --years 5     # shorter window
-//   npm run import:storms -- --state TX    # one state
+//   npm run import:storms                        # the whole service footprint
+//   npm run import:storms -- --years 5           # shorter window
+//   npm run import:storms -- --state TX,LA       # explicit states
+//   npm run import:storms -- --territory east-texas
+//   npm run import:storms -- --all-states        # nationwide
 //   npm run import:storms -- --kind hail
+//
+// With no --state, --territory or --all-states, the import is scoped to the
+// states in src/lib/territories.ts — the regions we actually sell into. There is
+// no value in carrying Montana hail in a Texas and Louisiana database.
 import { execFileSync } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -16,6 +22,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { FOOTPRINT_STATES, TERRITORY_IDS, getTerritory } from "../src/lib/territories";
+import type { GeoBounds } from "../src/lib/geo";
 
 const adapter = new PrismaBetterSqlite3({ url: process.env.DATABASE_URL ?? "file:./dev.db" });
 const prisma = new PrismaClient({ adapter });
@@ -29,10 +37,15 @@ const SOURCES = {
 type Kind = keyof typeof SOURCES;
 
 const BATCH_SIZE = 2000;
+/** SPC is donated infrastructure; a 502 on a 10 MB download is worth retrying. */
+const DOWNLOAD_ATTEMPTS = 4;
 
 interface Options {
   years: number;
-  state: string | null;
+  /** Empty means no state filter. */
+  states: string[];
+  bounds: GeoBounds | null;
+  scope: string;
   kinds: Kind[];
 }
 
@@ -42,10 +55,43 @@ function parseArgs(argv: string[]): Options {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const kind = get("--kind");
+  const kinds: Kind[] = kind === "hail" || kind === "wind" ? [kind] : ["hail", "wind"];
+  const years = Number(get("--years") ?? 10);
+
+  const territoryId = get("--territory");
+  if (territoryId) {
+    const territory = getTerritory(territoryId);
+    if (!territory) {
+      throw new Error(`Unknown territory "${territoryId}". Known: ${TERRITORY_IDS.join(", ")}`);
+    }
+    return {
+      years,
+      states: territory.states,
+      bounds: territory.bounds,
+      scope: territory.name,
+      kinds,
+    };
+  }
+
+  const explicit = get("--state");
+  if (explicit) {
+    const states = explicit
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    return { years, states, bounds: null, scope: states.join(", "), kinds };
+  }
+
+  if (argv.includes("--all-states")) {
+    return { years, states: [], bounds: null, scope: "nationwide", kinds };
+  }
+
   return {
-    years: Number(get("--years") ?? 10),
-    state: get("--state")?.toUpperCase() ?? null,
-    kinds: kind === "hail" || kind === "wind" ? [kind] : ["hail", "wind"],
+    years,
+    states: FOOTPRINT_STATES,
+    bounds: null,
+    scope: `service footprint (${FOOTPRINT_STATES.join(", ")})`,
+    kinds,
   };
 }
 
@@ -56,18 +102,33 @@ async function main() {
   mkdirSync(workDir, { recursive: true });
 
   console.log(
-    `Importing SPC reports from ${cutoffYear} onwards` +
-      `${options.state ? ` for ${options.state}` : ""} (${options.kinds.join(", ")})`,
+    `Importing SPC reports from ${cutoffYear} onwards for ${options.scope} (${options.kinds.join(", ")})`,
   );
 
+  // One source failing must not discard another that already imported — these
+  // are large downloads and the run is slow enough that restarting hurts.
+  const failures: string[] = [];
   for (const kind of options.kinds) {
-    const csvPath = await ensureCsv(kind, workDir);
-    const imported = await importCsv(kind, csvPath, cutoffYear, options.state);
-    console.log(`  ${kind}: ${imported.toLocaleString()} reports`);
+    try {
+      const csvPath = await ensureCsv(kind, workDir);
+      const imported = await importCsv(kind, csvPath, cutoffYear, options);
+      console.log(`  ${kind}: ${imported.toLocaleString()} reports`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push(`${kind}: ${message}`);
+      console.error(`  ${kind}: FAILED — ${message}`);
+    }
   }
 
   const total = await prisma.stormEvent.count();
   console.log(`StormEvent now holds ${total.toLocaleString()} reports.`);
+
+  if (failures.length > 0) {
+    // Non-zero exit so CI notices, but everything that did import is committed.
+    console.error(`\n${failures.length} source(s) failed. Re-run to pick them up:`);
+    for (const failure of failures) console.error(`  ${failure}`);
+    process.exitCode = 1;
+  }
 }
 
 /** Downloads and unzips a source file unless it is already on disk. */
@@ -77,10 +138,28 @@ async function ensureCsv(kind: Kind, workDir: string): Promise<string> {
 
   if (!existsSync(zipPath)) {
     console.log(`  downloading ${SOURCES[kind]}`);
-    const res = await fetch(SOURCES[kind]);
-    if (!res.ok) throw new Error(`${SOURCES[kind]} returned ${res.status}`);
     const { writeFileSync } = await import("node:fs");
-    writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
+    let lastError = "";
+
+    for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+      try {
+        const res = await fetch(SOURCES[kind]);
+        if (res.ok) {
+          writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
+          lastError = "";
+          break;
+        }
+        lastError = `${SOURCES[kind]} returned ${res.status}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+      if (attempt < DOWNLOAD_ATTEMPTS) {
+        const wait = attempt * 4000;
+        console.log(`    attempt ${attempt} failed (${lastError}); retrying in ${wait / 1000}s`);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+    }
+    if (lastError) throw new Error(lastError);
   }
 
   if (!existsSync(marker)) {
@@ -105,8 +184,9 @@ async function importCsv(
   kind: Kind,
   path: string,
   cutoffYear: number,
-  state: string | null,
+  options: Options,
 ): Promise<number> {
+  const states = new Set(options.states);
   const reader = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
 
   let header: string[] | null = null;
@@ -151,12 +231,21 @@ async function importCsv(
     const row = Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ""]));
     const year = Number(row.yr);
     if (!Number.isFinite(year) || year < cutoffYear) continue;
-    if (state && row.st?.toUpperCase() !== state) continue;
+    if (states.size > 0 && !states.has(row.st?.toUpperCase() ?? "")) continue;
 
     const lat = Number(row.slat);
     const lng = Number(row.slon);
     // 0,0 is SPC's "unknown location", not the Gulf of Guinea.
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+
+    if (options.bounds) {
+      const b = options.bounds;
+      // Hail up to the search radius outside a territory still falls on roofs
+      // inside it, so pad the box rather than clipping at the boundary.
+      const pad = 0.25;
+      if (lat < b.minLat - pad || lat > b.maxLat + pad) continue;
+      if (lng < b.minLng - pad || lng > b.maxLng + pad) continue;
+    }
 
     const occurredAt = new Date(`${row.date}T${(row.time || "00:00:00").slice(0, 8)}Z`);
     if (Number.isNaN(occurredAt.getTime())) continue;

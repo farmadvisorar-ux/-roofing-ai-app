@@ -6,6 +6,7 @@ import PropertyMarker from "./PropertyMarker";
 import PropertyPanel from "./PropertyPanel";
 import { TONE_DOT, TONE_LABEL, Tone, formatEstimate, propertyTitle, propertyTone } from "./propertyTone";
 import { LeadDTO, PropertyDTO, ProviderStatusResponse } from "@/lib/types";
+import { TERRITORIES, territoryForPoint } from "@/lib/territories";
 import {
   createLeadFromProperty,
   createProperty,
@@ -17,9 +18,11 @@ import {
   updateProperty,
 } from "@/lib/propertiesApi";
 
-/** Round Rock, TX — the same area the sample leads are in. */
+/** Round Rock, TX — Central Texas, where the sample leads are. */
 const DEFAULT_CENTER: LatLng = { lat: 30.5083, lng: -97.6789 };
 const DEFAULT_ZOOM = 17;
+/** Jumping to a region lands wide enough to see it, then you zoom to a street. */
+const TERRITORY_JUMP_ZOOM_OFFSET = 0;
 const LEGEND_TONES: Tone[] = ["pending", "partial", "enriched", "failed", "lead"];
 
 export default function CanvassMap() {
@@ -126,6 +129,10 @@ export default function CanvassMap() {
     }
   }
 
+  // Which region the viewport is over, so the map can say where you are and the
+  // picker reflects it rather than resetting to a placeholder.
+  const currentTerritory = territoryForPoint(center);
+
   const selected = properties.find((p) => p.id === selectedId) ?? null;
   // Best prospects first — the order a rep should work the street in.
   const ranked = [...properties].sort((a, b) => (b.estimateHigh ?? 0) - (a.estimateHigh ?? 0));
@@ -174,6 +181,27 @@ export default function CanvassMap() {
       )}
 
       <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-xs text-neutral-400">
+          <span className="sr-only">Jump to territory</span>
+          <select
+            value={currentTerritory?.id ?? ""}
+            onChange={(e) => {
+              const next = TERRITORIES.find((t) => t.id === e.target.value);
+              if (!next) return;
+              setCenter(next.center);
+              setZoom(next.zoom + TERRITORY_JUMP_ZOOM_OFFSET);
+            }}
+            aria-label="Jump to territory"
+            className="input py-1.5"
+          >
+            <option value="">Jump to territory…</option>
+            {TERRITORIES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.states.join("/")})
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           onClick={() => void handleSweep()}
@@ -183,7 +211,10 @@ export default function CanvassMap() {
           {sweeping ? "Sweeping…" : "Sweep this view"}
         </button>
         <span className="text-xs text-neutral-400">
-          {sweepSummary ?? "Pins every building in the visible area and prices each roof."}
+          {sweepSummary ??
+            (currentTerritory
+              ? `In ${currentTerritory.name}. Sweeping pins every building in view and prices each roof.`
+              : "Outside the service footprint — sweeping still works, but no territory owns these roofs.")}
         </span>
       </div>
 

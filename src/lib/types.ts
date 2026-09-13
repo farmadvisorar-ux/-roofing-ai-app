@@ -95,6 +95,7 @@ export interface PropertyDTO {
   enrichedAt: string | null;
   notes: string | null;
   leadId: string | null;
+  territory: string | null;
   createdAt: string;
   updatedAt: string;
 
@@ -152,4 +153,33 @@ export interface ProviderStatus {
 export interface ProviderStatusResponse {
   offline: boolean;
   providers: ProviderStatus[];
+}
+
+/** One region of the service footprint, with live coverage (GET /api/territories). */
+export interface TerritorySummary {
+  id: string;
+  name: string;
+  states: string[];
+  bounds: { minLat: number; minLng: number; maxLat: number; maxLng: number };
+  center: { lat: number; lng: number };
+  zoom: number;
+  hubs: string[];
+  properties: number;
+  unworked: number;
+  /** Roofs scored HOT or WARM. */
+  priority: number;
+  averageScore: number | null;
+  estimatedValue: number;
+  hailEvents: number;
+  recentHailEvents: number;
+  largestHailInches: number | null;
+  largestHailDate: string | null;
+  /** Most recent hail on record here — shows how current the import is. */
+  latestHailDate: string | null;
+  recentHailYears: number;
+}
+
+export interface TerritoryResponse {
+  territories: TerritorySummary[];
+  outsideFootprint: number;
 }

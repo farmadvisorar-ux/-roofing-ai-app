@@ -163,6 +163,10 @@ model Property {
   state   String?
   zip     String?
 
+  /// Which service region this roof sits in (src/lib/territories.ts). Assigned
+  /// from the coordinates, and corrected once reverse geocoding supplies a state.
+  territory String?
+
   // Ownership, from a county assessor / parcel open-data endpoint.
   ownerName String?
   parcelId  String?
@@ -237,6 +241,7 @@ model Property {
   @@index([lat, lng])
   @@index([leadScore])
   @@index([enrichmentStatus])
+  @@index([territory])
 }
 
 /// Observed severe-weather reports, imported from NOAA SPC (public domain) by

@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { hailExposure, nearbyWonLeads } from "@/lib/localSignals";
 import { LeadScore, scoreProperty, serializeScore } from "@/lib/signals";
 import { PropertyEventKind } from "@/generated/prisma/enums";
+import { territoryIdForPoint } from "@/lib/territories";
 import type { PropertyModel } from "@/generated/prisma/models";
 
 export interface RecordEventArgs {
@@ -75,10 +76,16 @@ export async function rescoreProperty(
     nearbyWonLeads: wonNearby,
   });
 
+  // Recomputed on every pass: a pin created before enrichment has no state yet,
+  // so its first territory is a bounding-box guess that the geocoded state later
+  // corrects. Both go through here.
+  const territory = territoryIdForPoint(point, property.state);
+
   const previous = property.leadScore;
   const updated = await prisma.property.update({
     where: { id: property.id },
     data: {
+      territory,
       hailEventsNearby: hail?.hailEventsNearby ?? null,
       maxHailInches: hail?.maxHailInches ?? null,
       lastHailDate: hail?.lastHailDate ?? null,

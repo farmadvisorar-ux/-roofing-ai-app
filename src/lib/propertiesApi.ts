@@ -4,7 +4,13 @@
 // paths — there is no base-URL env var to thread through (the Vite
 // `import.meta.env.VITE_API_URL` pattern has no equivalent here, and
 // NEXT_PUBLIC_* would only be needed to call a *different* origin).
-import { LeadDTO, PropertyDTO, PropertyPage, ProviderStatusResponse } from "@/lib/types";
+import {
+  LeadDTO,
+  PropertyDTO,
+  PropertyPage,
+  ProviderStatusResponse,
+  TerritoryResponse,
+} from "@/lib/types";
 
 export interface MapBbox {
   minLat: number;
@@ -43,6 +49,7 @@ export interface PropertyQueryOptions {
   minScore?: number;
   minEstimate?: number;
   search?: string;
+  territory?: string;
   sort?: string;
   dir?: "asc" | "desc";
   page?: number;
@@ -65,6 +72,7 @@ export function propertyQueryParams(options: PropertyQueryOptions = {}): URLSear
   if (options.minScore !== undefined) params.set("minScore", String(options.minScore));
   if (options.minEstimate !== undefined) params.set("minEstimate", String(options.minEstimate));
   if (options.search) params.set("q", options.search);
+  if (options.territory) params.set("territory", options.territory);
   if (options.sort) params.set("sort", options.sort);
   if (options.dir) params.set("dir", options.dir);
   if (options.page) params.set("page", String(options.page));
@@ -166,6 +174,11 @@ export async function createLeadFromProperty(
 ): Promise<LeadDTO> {
   const { lead } = await request<{ lead: LeadDTO }>(`/api/properties/${id}/lead`, json(body));
   return lead;
+}
+
+/** The service footprint with live coverage per region. */
+export async function fetchTerritories(): Promise<TerritoryResponse> {
+  return request<TerritoryResponse>("/api/territories");
 }
 
 export async function fetchProviderStatus(): Promise<ProviderStatusResponse> {

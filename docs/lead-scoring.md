@@ -72,10 +72,14 @@ and wind report since 1955 as public-domain CSV. `npm run import:storms` loads
 them into the local `StormEvent` table:
 
 ```bash
-npm run import:storms                    # last 10 years, hail and wind, nationwide
-npm run import:storms -- --state TX      # one state
-npm run import:storms -- --years 5 --kind hail
+npm run import:storms                            # the service footprint, last 10 years
+npm run import:storms -- --territory east-texas  # one region
+npm run import:storms -- --state TX,LA           # explicit states
+npm run import:storms -- --all-states            # nationwide
 ```
+
+With no scope given it imports the states in the
+[service footprint](service-footprint.md) rather than the whole country.
 
 Holding them locally means scoring a property costs an indexed radius query
 (single-digit milliseconds) instead of a third-party API call per address — which

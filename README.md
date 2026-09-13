@@ -17,7 +17,11 @@ A shed sales app with three pieces baked into one codebase:
    convertible into a pipeline lead in one step. Or sweep the whole visible block at once and get
    every roof in it pinned and priced, ranked best-first. Built on OpenStreetMap and county parcel
    layers, with a from-scratch tile map rather than a mapping SDK.
-5. **Buying signals and an explainable score** — roof age against material service life, observed
+5. **A defined service footprint** — six regions across Texas and western Louisiana (North, East,
+   West, South and Central Texas, plus West Louisiana). Every roof is assigned to one, storm data
+   is imported to match, the map jumps between them, and the workbench shows live coverage per
+   region. See [docs/service-footprint.md](docs/service-footprint.md).
+6. **Buying signals and an explainable score** — roof age against material service life, observed
    NOAA hail near the address, ownership changes, assessed value, wind exposure, and roofing
    permits that suppress a roof already done. Every point is attributable to a named signal, and
    missing data lowers confidence rather than scoring as bad. The `/prospects` workbench sorts,
@@ -47,9 +51,10 @@ npm run import:storms    # optional: NOAA hail/wind reports, for the hail signal
 npm run dev
 ```
 
-`import:storms` pulls the last 10 years of US severe-weather reports from NOAA SPC
-(public domain) into a local table; `-- --state TX --kind hail` narrows it. Without
-it the hail signal simply reports itself as unavailable.
+`import:storms` pulls the last 10 years of NOAA SPC severe-weather reports (public
+domain) into a local table, scoped by default to the service footprint's states —
+Texas and Louisiana. Narrow it with `-- --territory east-texas`, widen it with
+`-- --all-states`. Without it the hail signal simply reports itself as unavailable.
 
 Open `http://localhost:3000`:
 
@@ -71,6 +76,7 @@ src/lib/financing.ts loan/RTO payment math (shared client/server)
 src/lib/roofing.ts   roof measurement + re-roof estimate math (shared client/server)
 src/lib/openData.ts  OpenStreetMap / parcel / permit / weather clients
 src/lib/localSignals.ts  hail and neighbourhood signals queried from our own tables
+src/lib/territories.ts  the service footprint: regions, bounds, point-to-region lookup
 src/lib/signals.ts   the lead scoring model (see docs/lead-scoring.md)
 src/lib/propertyEnrichment.ts  runs those lookups, merges them, prices the roof, saves it
 src/lib/propertyScoring.ts  scores a stored property and appends to its audit trail
@@ -80,6 +86,16 @@ src/components/prospects/  workbench table, score breakdown, signals, activity t
 src/app/api/         REST-ish route handlers backed by Prisma (leads, contracts, properties)
 prisma/schema.prisma  Contact / Lead / ShedConfig / Contract / Property / StormEvent models
 ```
+
+## Service footprint
+
+Six regions across Texas and western Louisiana, defined once in
+`src/lib/territories.ts`: **West Louisiana**, **East Texas**, **North Texas**,
+**Central Texas**, **South Texas** and **West Texas**. Properties are assigned on
+write, the storm import scopes itself to the footprint's states, the map has a
+jump control, and `/prospects` shows roofs, unworked count, average score and hail
+history per region. Full detail, including how to change the boundaries and the
+Sabine River caveat: [docs/service-footprint.md](docs/service-footprint.md).
 
 ## Scoring
 

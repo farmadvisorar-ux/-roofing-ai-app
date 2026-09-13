@@ -118,6 +118,7 @@ Self-hosting — [Coolify](https://coolify.io/), [Dokploy](https://dokploy.com/)
 
 ```
 src/lib/geo.ts                small-area maths: distances, bounds, ring geometry
+src/lib/territories.ts        the service footprint and point-to-region lookup
 src/lib/openData.ts           network providers (Nominatim, Overpass, parcel, permits, wind)
 src/lib/localSignals.ts       signals from our own tables: hail radius query, won work nearby
 src/lib/roofing.ts            footprint -> sloped roof area -> squares -> price range
@@ -132,6 +133,10 @@ src/components/prospects/*    the workbench table, score breakdown, signals, act
 prisma/importStormEvents.ts   NOAA SPC importer (npm run import:storms)
 prisma/schema.prisma          Property, PropertyEvent (audit), StormEvent
 ```
+
+The regions we sell into are defined in
+[service-footprint.md](service-footprint.md); the storm import scopes itself to
+them by default.
 
 ### Where the signals meet the score
 

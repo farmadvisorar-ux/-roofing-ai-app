@@ -4,7 +4,7 @@
 // the map a rep works from. Dense, filterable, sortable, selectable, exportable.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { PropertyDTO, PropertyPage } from "@/lib/types";
+import { PropertyDTO, PropertyPage, TerritoryResponse } from "@/lib/types";
 import { EnrichmentStatus, ScoreBand } from "@/generated/prisma/enums";
 import { BAND_LABELS, parseScore } from "@/lib/signals";
 import {
@@ -12,10 +12,12 @@ import {
   bulkConvertToLeads,
   exportUrl,
   fetchProperty,
+  fetchTerritories,
   queryProperties,
 } from "@/lib/propertiesApi";
 import { ScoreBadge } from "./score";
 import ProspectDrawer from "./ProspectDrawer";
+import TerritoryBar from "./TerritoryBar";
 
 const PAGE_SIZE = 25;
 
@@ -41,6 +43,7 @@ export default function ProspectsWorkbench() {
   const [status, setStatus] = useState<string>("");
   const [worked, setWorked] = useState<"" | "unworked" | "worked">("");
   const [minScore, setMinScore] = useState("");
+  const [territory, setTerritory] = useState("");
   const [sort, setSort] = useState<SortField>("leadScore");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
@@ -50,6 +53,7 @@ export default function ProspectsWorkbench() {
   const [loaded, setLoaded] = useState<{ key: string; page: PropertyPage } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [coverage, setCoverage] = useState<TerritoryResponse | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
   // Keyed by the id it was fetched for, so the drawer shows a loading state
@@ -72,10 +76,11 @@ export default function ProspectsWorkbench() {
       status: status || undefined,
       unworked: worked === "unworked" ? true : undefined,
       minScore: minScore ? Number(minScore) : undefined,
+      territory: territory || undefined,
       sort,
       dir,
     }),
-    [debouncedSearch, band, status, worked, minScore, sort, dir],
+    [debouncedSearch, band, status, worked, minScore, territory, sort, dir],
   );
 
   const requestKey = `${JSON.stringify(filters)}|${page}|${reloadNonce}`;
@@ -101,6 +106,22 @@ export default function ProspectsWorkbench() {
       cancelled = true;
     };
   }, [requestKey, filters, page]);
+
+  // Coverage counts move whenever rows are converted, so refresh with the table.
+  useEffect(() => {
+    let cancelled = false;
+    fetchTerritories().then(
+      (result) => {
+        if (!cancelled) setCoverage(result);
+      },
+      () => {
+        // Coverage is a summary; the table stands on its own without it.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadNonce]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
@@ -189,6 +210,15 @@ export default function ProspectsWorkbench() {
 
   return (
     <div className="space-y-3">
+      {coverage && (
+        <TerritoryBar
+          territories={coverage.territories}
+          outsideFootprint={coverage.outsideFootprint}
+          selected={territory}
+          onSelect={(id) => changeFilter(() => setTerritory(id))}
+        />
+      )}
+
       <FilterBar
         search={search}
         onSearch={(v) => changeFilter(() => setSearch(v))}
@@ -208,6 +238,7 @@ export default function ProspectsWorkbench() {
             setStatus("");
             setWorked("");
             setMinScore("");
+            setTerritory("");
           })
         }
       />

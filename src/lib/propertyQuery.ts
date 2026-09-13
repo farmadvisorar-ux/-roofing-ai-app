@@ -6,6 +6,7 @@
 // notices until it has created three hundred wrong leads.
 import { EnrichmentStatus, ScoreBand } from "@/generated/prisma/enums";
 import { GeoBounds, isValidBounds } from "@/lib/geo";
+import { isTerritoryId, TERRITORY_IDS } from "@/lib/territories";
 import type { Prisma } from "@/generated/prisma/client";
 
 export const SORT_FIELDS = [
@@ -33,6 +34,8 @@ export interface PropertyFilters {
   unworked: boolean | null;
   /** Free text over address, city and owner. */
   search: string | null;
+  /** A territory id, or "none" for roofs outside the footprint. */
+  territory: string | null;
 }
 
 export interface PropertyQuery extends PropertyFilters {
@@ -63,6 +66,11 @@ export function parseFilters(params: URLSearchParams): PropertyFilters {
     throw new QueryError("Invalid band");
   }
 
+  const territory = params.get("territory");
+  if (territory && territory !== "none" && !isTerritoryId(territory)) {
+    throw new QueryError(`Unknown territory. Use one of: ${TERRITORY_IDS.join(", ")}, none`);
+  }
+
   const unworkedRaw = params.get("unworked");
   const search = params.get("q")?.trim();
 
@@ -74,6 +82,7 @@ export function parseFilters(params: URLSearchParams): PropertyFilters {
     minEstimate: parseNumber(params.get("minEstimate"), "minEstimate"),
     unworked: unworkedRaw === null ? null : unworkedRaw === "1" || unworkedRaw === "true",
     search: search ? search : null,
+    territory: territory ?? null,
   };
 }
 
@@ -133,6 +142,8 @@ export function buildWhere(filters: PropertyFilters): Prisma.PropertyWhereInput 
   if (filters.minEstimate !== null) where.estimateHigh = { gte: filters.minEstimate };
   if (filters.unworked === true) where.leadId = null;
   if (filters.unworked === false) where.leadId = { not: null };
+  if (filters.territory === "none") where.territory = null;
+  else if (filters.territory) where.territory = filters.territory;
 
   if (filters.search) {
     // SQLite's LIKE is case-insensitive for ASCII, which is what addresses are.
