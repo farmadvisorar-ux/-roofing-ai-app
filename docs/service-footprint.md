@@ -47,11 +47,16 @@ point-in-polygon check against real state boundaries; nothing else has to change
 there is no value in carrying Montana hail in a Texas and Louisiana database.
 
 ```bash
-npm run import:storms                          # TX + LA, last 10 years, hail + wind
+npm run import:storms                          # TX + LA archive + annual preliminary
+npm run import:storms:recent                   # the daily feed — fresh storms
 npm run import:storms -- --territory east-texas  # one region's bounds
 npm run import:storms -- --state TX,LA,OK      # explicit states
 npm run import:storms -- --all-states          # nationwide
 ```
+
+Run `import:storms` when SPC publishes a new archive (annually) and
+`import:storms:recent` on a schedule — nightly is plenty. The daily catch-up
+records which days it has fetched, so a repeat run costs almost nothing.
 
 A territory import pads the region's bounds slightly, because hail just outside a
 boundary still falls on roofs just inside it.
@@ -64,7 +69,8 @@ so CI notices, with everything that did import committed.
 
 Add, remove or reshape a region in `src/lib/territories.ts`. Then:
 
-1. Re-run `npm run import:storms` so the new area has hail history.
+1. Re-run `npm run import:storms` and `npm run import:storms:recent` so the new
+   area has both historical and current hail.
 2. Re-score existing properties so they pick up the new assignment — enriching a
    property reassigns it, and `rescoreProperty` does so on every write.
 

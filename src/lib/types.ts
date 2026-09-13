@@ -109,6 +109,7 @@ export interface PropertyDTO {
   hailEventsNearby: number | null;
   maxHailInches: number | null;
   lastHailDate: string | null;
+  hailIsPreliminary: boolean | null;
   hailWindowYears: number | null;
   hailSearchRadiusMi: number | null;
   stormWindowYears: number | null;
@@ -176,6 +177,9 @@ export interface TerritorySummary {
   largestHailDate: string | null;
   /** Most recent hail on record here — shows how current the import is. */
   latestHailDate: string | null;
+  /** True when the newest report is from SPC's unverified daily feed. */
+  latestHailIsPreliminary: boolean;
+  preliminaryHailEvents: number;
   recentHailYears: number;
 }
 

@@ -104,8 +104,12 @@ const DEFAULT_STORM_WINDOW_YEARS = 5;
 const STORM_DAYS_FOR_FULL_SCORE = 6;
 /** Below this, hail bounces off asphalt shingles without doing claimable damage. */
 const HAIL_DAMAGE_THRESHOLD_INCHES = 0.75;
-/** Hail this size takes the roof off, whatever its age. */
-const HAIL_SEVERE_INCHES = 2;
+/**
+ * Hail this size takes the roof off, whatever its age. Set at roughly the 99th
+ * percentile of observed reports — at 2" the factor saturated for most of the
+ * footprint and stopped telling anyone anything.
+ */
+const HAIL_SEVERE_INCHES = 3;
 /**
  * Carriers generally allow a claim within one to two years of the date of loss,
  * so hail stays fully actionable for that long and only then starts to fade —
@@ -141,6 +145,26 @@ const BAND_THRESHOLDS: [number, ScoreBand][] = [
   [50, ScoreBand.WARM],
   [30, ScoreBand.COOL],
 ];
+
+/**
+ * How strong a single hail event's case is: big enough to damage the roof, recent
+ * enough to still be actionable. Exported because the storage layer uses it to
+ * pick *which* nearby event to report — size and recency have to describe the
+ * same storm, or a property with 4" hail four years ago and 1" hail last week
+ * would score as though it had 4" hail last week.
+ */
+export function hailStrength(inches: number | null, yearsSince: number, windowYears: number): number {
+  const size = clamp01(
+    ((inches ?? 0) - HAIL_DAMAGE_THRESHOLD_INCHES) / (HAIL_SEVERE_INCHES - HAIL_DAMAGE_THRESHOLD_INCHES),
+  );
+  const recency =
+    yearsSince <= HAIL_FULL_STRENGTH_YEARS
+      ? 1
+      : clamp01(
+          1 - (yearsSince - HAIL_FULL_STRENGTH_YEARS) / Math.max(1, windowYears - HAIL_FULL_STRENGTH_YEARS),
+        );
+  return size * recency;
+}
 
 export function scoreProperty(inputs: SignalInputs, now: Date = new Date()): LeadScore {
   const components: ScoreComponent[] = [
@@ -250,19 +274,12 @@ function hailComponent(inputs: SignalInputs, now: Date): ScoreComponent {
     };
   }
 
+  // maxHailInches and lastHailDate describe the same storm: the strongest still
+  // actionable one nearby, chosen by hailStrength in localSignals.
   const inches = inputs.maxHailInches ?? 0;
-  const sizeFactor = clamp01(
-    (inches - HAIL_DAMAGE_THRESHOLD_INCHES) / (HAIL_SEVERE_INCHES - HAIL_DAMAGE_THRESHOLD_INCHES),
-  );
-
   const last = toDate(inputs.lastHailDate);
   const yearsSince = last ? Math.max(0, monthsBetween(last, now) / 12) : years;
-  const recencyFactor =
-    yearsSince <= HAIL_FULL_STRENGTH_YEARS
-      ? 1
-      : clamp01(1 - (yearsSince - HAIL_FULL_STRENGTH_YEARS) / Math.max(1, years - HAIL_FULL_STRENGTH_YEARS));
-
-  const strength = sizeFactor * recencyFactor;
+  const strength = hailStrength(inches, yearsSince, years);
   const age = yearsSince < 1 ? "under a year ago" : `${yearsSince.toFixed(1)}y ago`;
   const detail = inches
     ? `${inches.toFixed(2)}" hail ${age} · ${count} report${count === 1 ? "" : "s"} within ${radius} mi`

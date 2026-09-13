@@ -88,7 +88,15 @@ function HailFooter({ territory }: { territory: TerritorySummary }) {
     return (
       <span className="text-rose-300">
         {territory.recentHailEvents.toLocaleString()} hail reports in {territory.recentHailYears}y
-        {territory.largestHailInches ? ` · up to ${territory.largestHailInches}"` : ""}
+        {territory.largestHailInches ? ` · up to ${territory.largestHailInches}" ` : " "}
+        {territory.latestHailIsPreliminary && (
+          <span
+            className="text-neutral-500"
+            title="Newest reports come from SPC's daily feed and are not yet quality-controlled"
+          >
+            · live feed
+          </span>
+        )}
       </span>
     );
   }

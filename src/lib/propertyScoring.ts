@@ -89,6 +89,7 @@ export async function rescoreProperty(
       hailEventsNearby: hail?.hailEventsNearby ?? null,
       maxHailInches: hail?.maxHailInches ?? null,
       lastHailDate: hail?.lastHailDate ?? null,
+      hailIsPreliminary: hail?.hailIsPreliminary ?? null,
       hailWindowYears: hail?.hailWindowYears ?? null,
       hailSearchRadiusMi: hail?.hailSearchRadiusMi ?? null,
       leadScore: score.score,

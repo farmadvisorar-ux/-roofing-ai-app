@@ -40,7 +40,7 @@ export async function GET() {
           lat: { gte: territory.bounds.minLat, lte: territory.bounds.maxLat },
           lng: { gte: territory.bounds.minLng, lte: territory.bounds.maxLng },
         };
-        const [total, recent, biggest, latest] = await Promise.all([
+        const [total, recent, biggest, latest, preliminaryCount] = await Promise.all([
           prisma.stormEvent.count({ where }),
           prisma.stormEvent.count({ where: { ...where, occurredAt: { gte: since } } }),
           prisma.stormEvent.findFirst({
@@ -48,15 +48,15 @@ export async function GET() {
             orderBy: { magnitude: "desc" },
             select: { magnitude: true, occurredAt: true },
           }),
-          // Surfaced so the UI can show how current the storm data actually is —
-          // the SPC annual archive lags, and "0 recent" must not read as "no hail".
+          // Surfaced so the UI can show how current the storm data actually is.
           prisma.stormEvent.findFirst({
             where,
             orderBy: { occurredAt: "desc" },
-            select: { occurredAt: true },
+            select: { occurredAt: true, preliminary: true },
           }),
+          prisma.stormEvent.count({ where: { ...where, preliminary: true } }),
         ]);
-        return { id: territory.id, total, recent, biggest, latest };
+        return { id: territory.id, total, recent, biggest, latest, preliminaryCount };
       }),
     ),
   ]);
@@ -87,6 +87,8 @@ export async function GET() {
       largestHailInches: storm?.biggest?.magnitude ?? null,
       largestHailDate: storm?.biggest?.occurredAt ?? null,
       latestHailDate: storm?.latest?.occurredAt ?? null,
+      latestHailIsPreliminary: storm?.latest?.preliminary ?? false,
+      preliminaryHailEvents: storm?.preliminaryCount ?? 0,
       recentHailYears: RECENT_HAIL_YEARS,
     };
   });

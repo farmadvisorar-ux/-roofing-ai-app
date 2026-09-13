@@ -24,17 +24,34 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { FOOTPRINT_STATES, TERRITORY_IDS, getTerritory } from "../src/lib/territories";
 import type { GeoBounds } from "../src/lib/geo";
+import {
+  SourceKind,
+  StormRecord,
+  TABULAR_HEADER,
+  annualUrl,
+  archiveUrl,
+  fetchCsv,
+  insertRecords,
+  latestArchiveYear,
+  parseArchiveRow,
+  parseCsv,
+  splitCsvLine,
+  supersedePreliminary,
+} from "../src/lib/stormIngest";
 
 const adapter = new PrismaBetterSqlite3({ url: process.env.DATABASE_URL ?? "file:./dev.db" });
 const prisma = new PrismaClient({ adapter });
 
-/** SPC republishes these each year; the range in the name is the coverage. */
-const SOURCES = {
-  hail: process.env.SPC_HAIL_URL ?? "https://www.spc.noaa.gov/wcm/data/1955-2023_hail.csv.zip",
-  wind: process.env.SPC_WIND_URL ?? "https://www.spc.noaa.gov/wcm/data/1955-2023_wind.csv.zip",
-} as const;
+type Kind = SourceKind;
 
-type Kind = keyof typeof SOURCES;
+/**
+ * The confirmed archive year is discovered rather than pinned. An earlier
+ * revision hard-coded 1955-2023 and went quietly two years stale the moment SPC
+ * published 2024 and 2025.
+ */
+async function archiveSource(kind: Kind, year: number): Promise<string> {
+  return process.env[kind === "hail" ? "SPC_HAIL_URL" : "SPC_WIND_URL"] ?? archiveUrl(year, kind);
+}
 
 const BATCH_SIZE = 2000;
 /** SPC is donated infrastructure; a 502 on a 10 MB download is worth retrying. */
@@ -105,51 +122,124 @@ async function main() {
     `Importing SPC reports from ${cutoffYear} onwards for ${options.scope} (${options.kinds.join(", ")})`,
   );
 
-  // One source failing must not discard another that already imported — these
-  // are large downloads and the run is slow enough that restarting hurts.
+  const archiveYear = await latestArchiveYear();
+  if (archiveYear === null) {
+    console.error("Could not reach SPC to find the confirmed archive. Check connectivity.");
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`  confirmed archive covers through ${archiveYear}`);
+
   const failures: string[] = [];
+
+  // Tier 1: the quality-controlled archive.
   for (const kind of options.kinds) {
     try {
-      const csvPath = await ensureCsv(kind, workDir);
-      const imported = await importCsv(kind, csvPath, cutoffYear, options);
-      console.log(`  ${kind}: ${imported.toLocaleString()} reports`);
+      const csvPath = await ensureCsv(kind, archiveYear, workDir);
+      const imported = await importArchiveCsv(kind, csvPath, cutoffYear, options);
+      console.log(`  ${kind} archive: ${imported.toLocaleString()} reports`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      failures.push(`${kind}: ${message}`);
-      console.error(`  ${kind}: FAILED — ${message}`);
+      failures.push(`${kind} archive: ${message}`);
+      console.error(`  ${kind} archive: FAILED — ${message}`);
+    }
+  }
+
+  // Anything the archive now covers must not also be counted as preliminary.
+  for (let year = cutoffYear; year <= archiveYear; year++) {
+    const dropped = await supersedePreliminary(prisma, year);
+    if (dropped > 0) {
+      console.log(`  superseded ${dropped.toLocaleString()} preliminary reports for ${year}`);
+    }
+  }
+
+  // Tier 2: annual preliminary files for years the archive has not reached.
+  const thisYear = new Date().getUTCFullYear();
+  for (let year = archiveYear + 1; year <= thisYear; year++) {
+    for (const kind of options.kinds) {
+      try {
+        const imported = await importAnnualPreliminary(kind, year, options);
+        if (imported === null) {
+          console.log(`  ${kind} ${year}: no annual file published yet — use import:storms:recent`);
+        } else {
+          console.log(`  ${kind} ${year} preliminary: ${imported.toLocaleString()} reports`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failures.push(`${kind} ${year}: ${message}`);
+        console.error(`  ${kind} ${year}: FAILED — ${message}`);
+      }
     }
   }
 
   const total = await prisma.stormEvent.count();
-  console.log(`StormEvent now holds ${total.toLocaleString()} reports.`);
+  const preliminary = await prisma.stormEvent.count({ where: { preliminary: true } });
+  console.log(
+    `StormEvent now holds ${total.toLocaleString()} reports (${preliminary.toLocaleString()} preliminary).`,
+  );
 
   if (failures.length > 0) {
-    // Non-zero exit so CI notices, but everything that did import is committed.
     console.error(`\n${failures.length} source(s) failed. Re-run to pick them up:`);
     for (const failure of failures) console.error(`  ${failure}`);
     process.exitCode = 1;
   }
 }
 
+/**
+ * Annual preliminary files are plain CSV and small enough to hold in memory —
+ * this year so far, not seventy years of history.
+ */
+async function importAnnualPreliminary(
+  kind: Kind,
+  year: number,
+  options: Options,
+): Promise<number | null> {
+  const { text, error } = await fetchCsv(annualUrl(year, kind), TABULAR_HEADER);
+  if (error) throw new Error(error);
+  if (!text) return null;
+
+  const records: StormRecord[] = [];
+  for (const row of parseCsv(text)) {
+    const record = parseArchiveRow(row, kind, "annual");
+    if (record && keep(record, options)) records.push(record);
+  }
+  return insertRecords(prisma, records);
+}
+
+/** Shared filter: the state list and, for a territory import, its padded bounds. */
+function keep(record: StormRecord, options: Options): boolean {
+  if (options.states.length > 0 && !options.states.includes(record.state ?? "")) return false;
+  if (options.bounds) {
+    const b = options.bounds;
+    // Hail up to the search radius outside a territory still falls on roofs
+    // inside it, so pad the box rather than clipping at the boundary.
+    const pad = 0.25;
+    if (record.lat < b.minLat - pad || record.lat > b.maxLat + pad) return false;
+    if (record.lng < b.minLng - pad || record.lng > b.maxLng + pad) return false;
+  }
+  return true;
+}
+
 /** Downloads and unzips a source file unless it is already on disk. */
-async function ensureCsv(kind: Kind, workDir: string): Promise<string> {
-  const zipPath = join(workDir, `${kind}.csv.zip`);
-  const marker = join(workDir, `${kind}.extracted`);
+async function ensureCsv(kind: Kind, year: number, workDir: string): Promise<string> {
+  const url = await archiveSource(kind, year);
+  const zipPath = join(workDir, `${kind}-${year}.csv.zip`);
+  const marker = join(workDir, `${kind}-${year}.extracted`);
 
   if (!existsSync(zipPath)) {
-    console.log(`  downloading ${SOURCES[kind]}`);
+    console.log(`  downloading ${url}`);
     const { writeFileSync } = await import("node:fs");
     let lastError = "";
 
     for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
       try {
-        const res = await fetch(SOURCES[kind]);
+        const res = await fetch(url);
         if (res.ok) {
           writeFileSync(zipPath, Buffer.from(await res.arrayBuffer()));
           lastError = "";
           break;
         }
-        lastError = `${SOURCES[kind]} returned ${res.status}`;
+        lastError = `${url} returned ${res.status}`;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
@@ -163,135 +253,65 @@ async function ensureCsv(kind: Kind, workDir: string): Promise<string> {
   }
 
   if (!existsSync(marker)) {
-    rmSync(join(workDir, kind), { recursive: true, force: true });
-    execFileSync("unzip", ["-o", "-q", zipPath, "-d", join(workDir, kind)]);
+    rmSync(join(workDir, `${kind}-${year}`), { recursive: true, force: true });
+    execFileSync("unzip", ["-o", "-q", zipPath, "-d", join(workDir, `${kind}-${year}`)]);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(marker, "");
   }
 
   const { readdirSync } = await import("node:fs");
-  const dir = join(workDir, kind);
+  const dir = join(workDir, `${kind}-${year}`);
   const csv = readdirSync(dir).find((f) => f.endsWith(".csv"));
   if (!csv) throw new Error(`No CSV inside ${zipPath}`);
   return join(dir, csv);
 }
 
 /**
- * Streams the CSV rather than loading it — the hail file alone is 41 MB and the
- * point is to keep this runnable on a laptop.
+ * Streams the archive rather than loading it — the hail file alone is 41 MB and
+ * the point is to keep this runnable on a laptop. Rows go through the same
+ * parser the annual preliminary tier uses, so the two feeds cannot drift on how
+ * a timestamp or a magnitude is read.
  */
-async function importCsv(
+async function importArchiveCsv(
   kind: Kind,
   path: string,
   cutoffYear: number,
   options: Options,
 ): Promise<number> {
-  const states = new Set(options.states);
   const reader = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
 
   let header: string[] | null = null;
-  let batch: {
-    kind: "HAIL" | "WIND";
-    occurredAt: Date;
-    lat: number;
-    lng: number;
-    magnitude: number | null;
-    state: string | null;
-    sourceKey: string;
-  }[] = [];
+  let batch: StormRecord[] = [];
   let imported = 0;
 
   const flush = async () => {
-    if (batch.length === 0) return;
-
-    // Re-importing must be idempotent. SQLite has no skipDuplicates, so drop
-    // repeats inside the batch and anything already stored before inserting.
-    const unique = new Map(batch.map((row) => [row.sourceKey, row]));
-    const existing = await prisma.stormEvent.findMany({
-      where: { sourceKey: { in: [...unique.keys()] } },
-      select: { sourceKey: true },
-    });
-    for (const row of existing) unique.delete(row.sourceKey);
-
-    if (unique.size > 0) {
-      const result = await prisma.stormEvent.createMany({ data: [...unique.values()] });
-      imported += result.count;
-    }
+    imported += await insertRecords(prisma, batch);
     batch = [];
   };
 
   for await (const line of reader) {
     if (!line.trim()) continue;
-    const cells = splitCsv(line);
+    const cells = splitCsvLine(line);
     if (!header) {
       header = cells.map((c) => c.trim().toLowerCase());
       continue;
     }
 
     const row = Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ""]));
+    // Cheap rejections before the full parse: the file is 400,000 rows.
     const year = Number(row.yr);
     if (!Number.isFinite(year) || year < cutoffYear) continue;
-    if (states.size > 0 && !states.has(row.st?.toUpperCase() ?? "")) continue;
+    if (options.states.length > 0 && !options.states.includes(row.st?.toUpperCase() ?? "")) continue;
 
-    const lat = Number(row.slat);
-    const lng = Number(row.slon);
-    // 0,0 is SPC's "unknown location", not the Gulf of Guinea.
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+    const record = parseArchiveRow(row, kind, "archive");
+    if (!record || !keep(record, options)) continue;
 
-    if (options.bounds) {
-      const b = options.bounds;
-      // Hail up to the search radius outside a territory still falls on roofs
-      // inside it, so pad the box rather than clipping at the boundary.
-      const pad = 0.25;
-      if (lat < b.minLat - pad || lat > b.maxLat + pad) continue;
-      if (lng < b.minLng - pad || lng > b.maxLng + pad) continue;
-    }
-
-    const occurredAt = new Date(`${row.date}T${(row.time || "00:00:00").slice(0, 8)}Z`);
-    if (Number.isNaN(occurredAt.getTime())) continue;
-
-    const magnitude = Number(row.mag);
-    batch.push({
-      kind: kind === "hail" ? "HAIL" : "WIND",
-      occurredAt,
-      lat,
-      lng,
-      magnitude: Number.isFinite(magnitude) && magnitude > 0 ? magnitude : null,
-      state: row.st?.toUpperCase() || null,
-      // om is SPC's per-year sequence number; pair it with year and kind.
-      sourceKey: `${kind}:${year}:${row.om}:${row.date}:${lat},${lng}`,
-    });
-
+    batch.push(record);
     if (batch.length >= BATCH_SIZE) await flush();
   }
 
   await flush();
   return imported;
-}
-
-/** SPC files are simple, but a quoted comma in a location name would still break a split(","). */
-function splitCsv(line: string): string[] {
-  const cells: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (quoted && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (ch === "," && !quoted) {
-      cells.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  cells.push(current);
-  return cells;
 }
 
 main()

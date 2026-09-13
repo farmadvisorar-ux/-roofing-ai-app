@@ -6,6 +6,7 @@
 import { prisma } from "@/lib/prisma";
 import { GeoPoint, degreeDeltas, distanceFt } from "@/lib/geo";
 import { LeadStage, StormKind } from "@/generated/prisma/enums";
+import { hailStrength } from "@/lib/signals";
 
 const FT_PER_MILE = 5280;
 
@@ -22,8 +23,12 @@ const NEIGHBOUR_RADIUS_MI = Number(process.env.NEIGHBOUR_RADIUS_MI ?? 0.5);
 
 export interface HailExposure {
   hailEventsNearby: number;
+  /** Size of the driving event — not the largest ever, the strongest case now. */
   maxHailInches: number | null;
+  /** When that same event happened. */
   lastHailDate: Date | null;
+  /** True when the most recent nearby report is still unverified. */
+  hailIsPreliminary: boolean | null;
   hailWindowYears: number;
   hailSearchRadiusMi: number;
 }
@@ -52,26 +57,37 @@ export async function hailExposure(point: GeoPoint): Promise<HailExposure | null
       lat: { gte: point.lat - latDelta, lte: point.lat + latDelta },
       lng: { gte: point.lng - lngDelta, lte: point.lng + lngDelta },
     },
-    select: { lat: true, lng: true, magnitude: true, occurredAt: true },
+    select: { lat: true, lng: true, magnitude: true, occurredAt: true, preliminary: true },
   });
 
+  // Pick the single event with the strongest case rather than pairing the largest
+  // hail ever seen with the most recent date — those are usually different storms,
+  // and reporting them together overstates both.
   let count = 0;
-  let maxInches: number | null = null;
-  let last: Date | null = null;
+  let best: { inches: number | null; at: Date; preliminary: boolean; strength: number } | null = null;
+  const now = Date.now();
 
   for (const event of candidates) {
     if (distanceFt(point, event) > radiusFt) continue;
     count++;
-    if (event.magnitude !== null && (maxInches === null || event.magnitude > maxInches)) {
-      maxInches = event.magnitude;
+
+    const yearsSince = Math.max(0, (now - event.occurredAt.getTime()) / 31_557_600_000);
+    const strength = hailStrength(event.magnitude, yearsSince, HAIL_WINDOW_YEARS);
+    // Ties break toward the more recent storm: same case, fresher conversation.
+    if (
+      best === null ||
+      strength > best.strength ||
+      (strength === best.strength && event.occurredAt > best.at)
+    ) {
+      best = { inches: event.magnitude, at: event.occurredAt, preliminary: event.preliminary, strength };
     }
-    if (last === null || event.occurredAt > last) last = event.occurredAt;
   }
 
   return {
     hailEventsNearby: count,
-    maxHailInches: maxInches,
-    lastHailDate: last,
+    maxHailInches: best?.inches ?? null,
+    lastHailDate: best?.at ?? null,
+    hailIsPreliminary: best?.preliminary ?? null,
     hailWindowYears: HAIL_WINDOW_YEARS,
     hailSearchRadiusMi: HAIL_SEARCH_RADIUS_MI,
   };

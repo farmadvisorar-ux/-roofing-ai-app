@@ -203,6 +203,9 @@ model Property {
   hailEventsNearby   Int?
   maxHailInches      Float?
   lastHailDate       DateTime?
+  /// True when the most recent hail behind this score is still an unverified
+  /// SPC daily report — worth knowing before quoting off it.
+  hailIsPreliminary  Boolean?
   hailWindowYears    Int?
   hailSearchRadiusMi Float?
 
@@ -258,9 +261,32 @@ model StormEvent {
   state      String?
   /// Stable identity from the source file, so re-importing cannot duplicate.
   sourceKey  String    @unique
+  /// Which SPC feed this came from: "archive", "annual" or "daily".
+  source     String    @default("archive")
+  /// True while the report is unverified. SPC quality-controls the previous
+  /// year's reports into the confirmed archive, which then supersedes these.
+  preliminary Boolean  @default(false)
 
   @@index([occurredAt])
   @@index([lat, lng])
+  @@index([preliminary])
+}
+
+/// Which days of SPC's daily preliminary feed have been pulled.
+///
+/// Needed because a genuinely quiet day yields an empty file, and without a
+/// record of having asked we would re-fetch it forever. Lets the catch-up run
+/// on a cron and only request what it is missing.
+model StormIngestDay {
+  id        String    @id @default(cuid())
+  /// The SPC convective day (12Z-12Z) this file covers, as YYYY-MM-DD.
+  day       String
+  kind      StormKind
+  reports   Int       @default(0)
+  fetchedAt DateTime  @default(now())
+
+  @@unique([day, kind])
+  @@index([day])
 }
 
 /// Append-only trail of what happened to a property and what changed it.

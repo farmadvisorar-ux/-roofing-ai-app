@@ -27,7 +27,11 @@ export function SignalList({ property }: { property: PropertyDTO }) {
       source: "NOAA SPC",
     });
     if (property.lastHailDate) {
-      rows.push({ label: "Last hail", value: formatDay(property.lastHailDate), source: "NOAA SPC" });
+      rows.push({
+        label: "Last hail",
+        value: formatDay(property.lastHailDate),
+        source: property.hailIsPreliminary ? "NOAA SPC (preliminary)" : "NOAA SPC",
+      });
     }
   }
 

@@ -47,7 +47,8 @@ A shed sales app with three pieces baked into one codebase:
 npm install
 npx prisma migrate dev   # creates dev.db and applies the schema
 npm run db:seed          # optional: adds sample leads and canvassing pins
-npm run import:storms    # optional: NOAA hail/wind reports, for the hail signal
+npm run import:storms         # optional: NOAA hail/wind history, for the hail signal
+npm run import:storms:recent  # optional: SPC's daily feed, for storms this week
 npm run dev
 ```
 
@@ -55,6 +56,11 @@ npm run dev
 domain) into a local table, scoped by default to the service footprint's states —
 Texas and Louisiana. Narrow it with `-- --territory east-texas`, widen it with
 `-- --all-states`. Without it the hail signal simply reports itself as unavailable.
+
+`import:storms:recent` adds SPC's daily preliminary reports, which is what closes
+the gap between the confirmed archive and this week. It is incremental and safe on
+a cron. Preliminary reports are flagged as such wherever they appear, because they
+have not been through quality control.
 
 Open `http://localhost:3000`:
 

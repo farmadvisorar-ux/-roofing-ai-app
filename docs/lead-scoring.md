@@ -72,14 +72,54 @@ and wind report since 1955 as public-domain CSV. `npm run import:storms` loads
 them into the local `StormEvent` table:
 
 ```bash
-npm run import:storms                            # the service footprint, last 10 years
+npm run import:storms                            # archive + annual preliminary
+npm run import:storms:recent                     # the daily feed, for fresh storms
 npm run import:storms -- --territory east-texas  # one region
 npm run import:storms -- --state TX,LA           # explicit states
 npm run import:storms -- --all-states            # nationwide
 ```
 
-With no scope given it imports the states in the
-[service footprint](service-footprint.md) rather than the whole country.
+With no scope given both import the states in the
+[service footprint](service-footprint.md) rather than the whole country. The two
+commands cover different feeds — see below.
+
+## Three feeds, three freshnesses
+
+SPC publishes the same events three ways, trading quality against currency:
+
+| Feed | File | Covers | Quality |
+| --- | --- | --- | --- |
+| Archive | `1955-YYYY_hail.csv.zip` | through the last completed review | Quality-controlled |
+| Annual | `YYYY_hail.csv` | this year so far, once published | Preliminary |
+| Daily | `YYMMDD_rpts_hail.csv` | one convective day | Preliminary |
+
+Selling on fresh storms needs the daily feed; trusting the numbers needs the
+archive. So all three are ingested, preliminary rows carry `preliminary: true`,
+and when the archive later covers a year its preliminary rows for that year are
+deleted. The feeds share no identifier — the same storm arrives under different
+keys — so superseding by year is what stops one event being counted twice.
+
+`npm run import:storms` handles the archive and annual tiers and discovers the
+newest archive year rather than assuming one. `npm run import:storms:recent`
+handles the daily tier: it records which days it has pulled, so it is safe on a
+cron and asks only for what it is missing. Today and yesterday are deliberately
+re-fetched each run, because those files are still filling.
+
+### Two format traps, both verified against the real files
+
+**Archive timestamps are CST, not UTC.** The `tz` column is `3`, SPC's code for
+CST, and every modern row uses it. Reading those times as UTC dates a third of
+all reports a day early — and makes the archive disagree with the daily feed
+about the same physical event.
+
+**A daily file covers a convective day, 12Z to 12Z.** A report timed before 1200
+belongs to the *following* calendar day. Get this wrong and two thirds of a busy
+evening's hail lands on the wrong date.
+
+Both are handled, and the cross-check that proves it: one New Mexico report
+appears in `250615_rpts_hail.csv` at `Time=0000` and in the archive at
+`2025-06-15 18:00:00`. Parsed correctly, both resolve to the same instant —
+`2025-06-16T00:00:00Z`.
 
 Holding them locally means scoring a property costs an indexed radius query
 (single-digit milliseconds) instead of a third-party API call per address — which
@@ -104,9 +144,11 @@ one request.
 
 ## Known limits
 
-- **The SPC annual archive lags.** It covers through the previous calendar year,
-  so the freshest hail is missing until the next release. A deployment that sells
-  on fresh storms should also ingest SPC's current-year preliminary reports.
+- **Preliminary reports are unverified.** The daily feed is raw spotter and
+  public reports; SPC removes duplicates and corrects sizes during quality
+  control. A score resting on a preliminary report says so, in the workbench
+  drawer and on the territory card. Treat a preliminary 4" report as a reason to
+  go and look, not as a measurement.
 - **Permits and assessor data are per-county.** Both are unconfigured by default;
   without them, four of the seven signals are unavailable and scores are
   correspondingly low-confidence.
