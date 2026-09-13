@@ -35,6 +35,32 @@ enum EnrichmentStatus {
   FAILED
 }
 
+enum ScoreBand {
+  HOT
+  WARM
+  COOL
+  COLD
+  /// Too little is known to call it either way — not a verdict, an absence of one.
+  UNRATED
+}
+
+/// What happened to a property. Every change to a record a rep will act on is
+/// logged, so "why is this a 84?" always has an answer.
+enum StormKind {
+  HAIL
+  WIND
+}
+
+enum PropertyEventKind {
+  CREATED
+  SWEPT
+  ENRICHED
+  SCORED
+  MEASURED
+  CONVERTED
+  UPDATED
+}
+
 enum ContractType {
   CASH
   FINANCE
@@ -155,6 +181,42 @@ model Property {
   estimateLow  Float?
   estimateHigh Float?
 
+  // --- Buying signals -----------------------------------------------------
+  // Assessor record: a house that changed hands recently is a far warmer lead.
+  assessedValue Float?
+  lastSaleDate  DateTime?
+  lastSalePrice Float?
+
+  // Permit record. A recent roofing permit is the strongest negative signal
+  // there is — that roof was just done, so don't knock.
+  lastPermitDate DateTime?
+  lastPermitType String?
+  roofPermitDate DateTime?
+
+  // Observed hail near this address, from the locally imported NOAA storm
+  // reports. The single most predictive signal in roofing: a 2" hail event a
+  // year ago means most roofs on that street have a claim on them.
+  hailEventsNearby   Int?
+  maxHailInches      Float?
+  lastHailDate       DateTime?
+  hailWindowYears    Int?
+  hailSearchRadiusMi Float?
+
+  // Wind exposure from the Open-Meteo archive. A weaker, complementary signal:
+  // reanalysis captures sustained wind well but does not resolve convective
+  // storms, so it ranks windy coastlines above hail country on its own.
+  stormWindowYears Int?
+  severeStormDays  Int?
+  peakGustMph      Float?
+
+  // Explainable score, 0-100. `scoreComponents` holds the per-signal breakdown
+  // as JSON and `scoreConfidence` how much of the model had data to work with.
+  leadScore       Int?
+  leadScoreBand   ScoreBand?
+  scoreConfidence Float?
+  scoreComponents String?
+  scoredAt        DateTime?
+
   enrichmentStatus  EnrichmentStatus @default(PENDING)
   enrichmentSources String? // comma-separated provider ids that contributed
   enrichmentError   String?
@@ -170,5 +232,44 @@ model Property {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  events PropertyEvent[]
+
   @@index([lat, lng])
+  @@index([leadScore])
+  @@index([enrichmentStatus])
+}
+
+/// Observed severe-weather reports, imported from NOAA SPC (public domain) by
+/// `npm run import:storms`. Held locally so scoring a property costs a indexed
+/// query rather than a third-party API call per address.
+model StormEvent {
+  id         String    @id @default(cuid())
+  kind       StormKind
+  occurredAt DateTime
+  lat        Float
+  lng        Float
+  /// Hail diameter in inches, or gust speed in knots for wind reports.
+  magnitude  Float?
+  state      String?
+  /// Stable identity from the source file, so re-importing cannot duplicate.
+  sourceKey  String    @unique
+
+  @@index([occurredAt])
+  @@index([lat, lng])
+}
+
+/// Append-only trail of what happened to a property and what changed it.
+model PropertyEvent {
+  id         String            @id @default(cuid())
+  propertyId String
+  property   Property          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  kind       PropertyEventKind
+  summary    String
+  /// JSON detail — the provider results or field changes behind this event.
+  detail     String?
+  /// Who or what caused it: a provider id, "sweep", or a user identifier.
+  actor      String?
+  createdAt  DateTime          @default(now())
+
+  @@index([propertyId, createdAt])
 }

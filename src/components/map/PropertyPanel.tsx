@@ -6,6 +6,8 @@ import { LeadDTO, PropertyDTO } from "@/lib/types";
 import { estimateRoof, osmShapeToRoofStyle } from "@/lib/roofing";
 import { DEFAULT_SHED_CONFIG, ROOF_STYLE_LABELS, shedConfigToQuery } from "@/lib/shed";
 import { TONE_BADGE, TONE_LABEL, formatEstimate, propertyTitle, propertyTone } from "./propertyTone";
+import { ScoreBadge, ScoreBreakdown } from "@/components/prospects/score";
+import { SignalList } from "@/components/prospects/signals";
 
 interface PropertyPanelProps {
   property: PropertyDTO;
@@ -63,6 +65,7 @@ export default function PropertyPanel({
           </button>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
+          <ScoreBadge property={property} />
           <span className={`rounded-full border px-2 py-0.5 text-xs ${TONE_BADGE[tone]}`}>
             {TONE_LABEL[tone]}
           </span>
@@ -87,6 +90,18 @@ export default function PropertyPanel({
           )}
         </section>
       )}
+
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Why this score
+        </h3>
+        <ScoreBreakdown property={property} />
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">Signals</h3>
+        <SignalList property={property} />
+      </section>
 
       <section className="space-y-1 text-sm">
         <Row label="Owner of record" value={property.ownerName} />

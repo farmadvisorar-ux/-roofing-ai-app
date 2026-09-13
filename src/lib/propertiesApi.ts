@@ -4,7 +4,7 @@
 // paths — there is no base-URL env var to thread through (the Vite
 // `import.meta.env.VITE_API_URL` pattern has no equivalent here, and
 // NEXT_PUBLIC_* would only be needed to call a *different* origin).
-import { LeadDTO, PropertyDTO, ProviderStatusResponse } from "@/lib/types";
+import { LeadDTO, PropertyDTO, PropertyPage, ProviderStatusResponse } from "@/lib/types";
 
 export interface MapBbox {
   minLat: number;
@@ -35,9 +35,23 @@ function json(body: unknown): RequestInit {
   };
 }
 
-export async function listProperties(
-  options: { bbox?: MapBbox; unworked?: boolean; limit?: number } = {},
-): Promise<PropertyDTO[]> {
+export interface PropertyQueryOptions {
+  bbox?: MapBbox;
+  unworked?: boolean;
+  band?: string;
+  status?: string;
+  minScore?: number;
+  minEstimate?: number;
+  search?: string;
+  sort?: string;
+  dir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+  /** The map's "everything in view" spelling; bypasses page-size limits. */
+  limit?: number;
+}
+
+export function propertyQueryParams(options: PropertyQueryOptions = {}): URLSearchParams {
   const params = new URLSearchParams();
   if (options.bbox) {
     params.set("minLat", String(options.bbox.minLat));
@@ -46,13 +60,46 @@ export async function listProperties(
     params.set("maxLng", String(options.bbox.maxLng));
   }
   if (options.unworked) params.set("unworked", "1");
+  if (options.band) params.set("band", options.band);
+  if (options.status) params.set("status", options.status);
+  if (options.minScore !== undefined) params.set("minScore", String(options.minScore));
+  if (options.minEstimate !== undefined) params.set("minEstimate", String(options.minEstimate));
+  if (options.search) params.set("q", options.search);
+  if (options.sort) params.set("sort", options.sort);
+  if (options.dir) params.set("dir", options.dir);
+  if (options.page) params.set("page", String(options.page));
+  if (options.pageSize) params.set("pageSize", String(options.pageSize));
   if (options.limit) params.set("limit", String(options.limit));
+  return params;
+}
 
-  const query = params.toString();
-  const { properties } = await request<{ properties: PropertyDTO[] }>(
-    `/api/properties${query ? `?${query}` : ""}`,
-  );
-  return properties;
+/** A page of properties, with the totals the workbench needs for its pager. */
+export async function queryProperties(options: PropertyQueryOptions = {}): Promise<PropertyPage> {
+  const query = propertyQueryParams(options).toString();
+  return request<PropertyPage>(`/api/properties${query ? `?${query}` : ""}`);
+}
+
+export async function listProperties(options: PropertyQueryOptions = {}): Promise<PropertyDTO[]> {
+  return (await queryProperties(options)).properties;
+}
+
+/** The CSV endpoint takes the same filters, so the download matches the screen. */
+export function exportUrl(options: PropertyQueryOptions = {}): string {
+  const query = propertyQueryParams({ ...options, page: undefined, pageSize: undefined }).toString();
+  return `/api/properties/export${query ? `?${query}` : ""}`;
+}
+
+export interface BulkLeadResult {
+  created: { propertyId: string; leadId: string }[];
+  createdCount: number;
+  skipped: { propertyId: string; reason: string }[];
+}
+
+export async function bulkConvertToLeads(
+  propertyIds: string[],
+  body: { stage?: string; notes?: string } = {},
+): Promise<BulkLeadResult> {
+  return request<BulkLeadResult>("/api/properties/bulk-lead", json({ propertyIds, ...body }));
 }
 
 export interface SweepResult {

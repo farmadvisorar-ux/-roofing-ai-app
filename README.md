@@ -17,6 +17,12 @@ A shed sales app with three pieces baked into one codebase:
    convertible into a pipeline lead in one step. Or sweep the whole visible block at once and get
    every roof in it pinned and priced, ranked best-first. Built on OpenStreetMap and county parcel
    layers, with a from-scratch tile map rather than a mapping SDK.
+5. **Buying signals and an explainable score** — roof age against material service life, observed
+   NOAA hail near the address, ownership changes, assessed value, wind exposure, and roofing
+   permits that suppress a roof already done. Every point is attributable to a named signal, and
+   missing data lowers confidence rather than scoring as bad. The `/prospects` workbench sorts,
+   filters, exports and bulk-converts on it, and every change is recorded in a per-property audit
+   trail.
 
 ## Stack
 
@@ -37,13 +43,20 @@ A shed sales app with three pieces baked into one codebase:
 npm install
 npx prisma migrate dev   # creates dev.db and applies the schema
 npm run db:seed          # optional: adds sample leads and canvassing pins
+npm run import:storms    # optional: NOAA hail/wind reports, for the hail signal
 npm run dev
 ```
+
+`import:storms` pulls the last 10 years of US severe-weather reports from NOAA SPC
+(public domain) into a local table; `-- --state TX --kind hail` narrows it. Without
+it the hail signal simply reports itself as unavailable.
 
 Open `http://localhost:3000`:
 
 - `/configurator` — design a shed in 3D, get a live price, submit a quote (creates a CRM lead)
 - `/map` — canvassing map: tap roofs to pin, enrich, measure and price them, then convert to leads
+- `/prospects` — workbench over every canvassed roof: score, filters, sorting, CSV export, bulk
+  convert, and a drawer explaining each score signal by signal
 - `/ar?leadId=...` (or `/ar?<config query params>`) — open on a phone to place the shed in AR
 - `/crm` — pipeline board of leads
 - `/crm/leads/[id]` — lead detail, saved 3D config, AR QR code
@@ -56,13 +69,27 @@ src/engine/        proprietary WebGL2 3D engine (math, geometry, renderer, orbit
 src/lib/shed.ts     shed configuration type + pricing model (shared client/server)
 src/lib/financing.ts loan/RTO payment math (shared client/server)
 src/lib/roofing.ts   roof measurement + re-roof estimate math (shared client/server)
-src/lib/openData.ts  OpenStreetMap / parcel-layer clients used to enrich a property
+src/lib/openData.ts  OpenStreetMap / parcel / permit / weather clients
+src/lib/localSignals.ts  hail and neighbourhood signals queried from our own tables
+src/lib/signals.ts   the lead scoring model (see docs/lead-scoring.md)
 src/lib/propertyEnrichment.ts  runs those lookups, merges them, prices the roof, saves it
+src/lib/propertyScoring.ts  scores a stored property and appends to its audit trail
 src/components/     React UI: 3D viewer, AR viewer, configurator, CRM screens
 src/components/map/  canvassing map: tile map, pins, property detail panel
+src/components/prospects/  workbench table, score breakdown, signals, activity trail
 src/app/api/         REST-ish route handlers backed by Prisma (leads, contracts, properties)
-prisma/schema.prisma  Contact / Lead / ShedConfig / Contract / Property models
+prisma/schema.prisma  Contact / Lead / ShedConfig / Contract / Property / StormEvent models
 ```
+
+## Scoring
+
+Each roof carries a 0–100 score built from roof age, observed hail, ownership
+changes, job size, wind exposure, assessed value and nearby won work, with a
+roofing permit acting as a suppressor rather than a penalty. Missing signals lower
+*confidence* instead of the score, and a score built on thin evidence is damped
+toward a neutral prior so one lucky signal cannot rank an unknown roof above a
+qualified one. Full model, weights and caveats:
+[docs/lead-scoring.md](docs/lead-scoring.md).
 
 The configurator builds a `ShedConfigInput` client-side, renders it with `buildShedMesh()` +
 `Renderer`, and on "Get my quote" POSTs it to `/api/leads`, which atomically creates a `Contact`,

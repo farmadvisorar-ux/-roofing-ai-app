@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { estimateMidpoint, estimateRoof } from "@/lib/roofing";
+import { recordEvent, rescoreProperty } from "@/lib/propertyScoring";
+import { PropertyEventKind } from "@/generated/prisma/enums";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +10,11 @@ export async function GET(_request: NextRequest, ctx: RouteContext<"/api/propert
   const { id } = await ctx.params;
   const property = await prisma.property.findUnique({
     where: { id },
-    include: { lead: { include: { contact: true } } },
+    include: {
+      lead: { include: { contact: true } },
+      // Enough history to answer "what changed and when", not the whole life story.
+      events: { orderBy: { createdAt: "desc" }, take: 25 },
+    },
   });
   if (!property) return NextResponse.json({ error: "Property not found" }, { status: 404 });
   return NextResponse.json({ property });
@@ -91,6 +97,23 @@ export async function PATCH(request: NextRequest, ctx: RouteContext<"/api/proper
       where: { id: property.leadId },
       data: { estimatedValue: estimateMidpoint(estimate) },
     });
+  }
+
+  const changed = Object.keys(body).filter((k) => body[k as keyof UpdatePropertyBody] !== undefined);
+  await recordEvent({
+    propertyId: id,
+    kind: measurementsChanged ? PropertyEventKind.MEASURED : PropertyEventKind.UPDATED,
+    summary: measurementsChanged
+      ? `Measurements corrected by hand (${changed.join(", ")})`
+      : `Edited ${changed.join(", ")}`,
+    detail: body,
+    actor: "user",
+  });
+
+  // A hand measurement changes the job size the score is built on.
+  if (measurementsChanged) {
+    const rescored = await rescoreProperty(property, { actor: "user" });
+    return NextResponse.json({ property: { ...rescored, lead: property.lead } });
   }
 
   return NextResponse.json({ property });

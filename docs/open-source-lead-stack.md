@@ -11,7 +11,10 @@ proprietary mapping SDK, and no key is needed to run it.
 | [OpenStreetMap](https://www.openstreetmap.org/) raster tiles | The map you canvass on (`src/components/map/TileMap.tsx`) | Data ODbL 1.0 |
 | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) | Building footprint, `building:levels`, `roof:shape`, `roof:material`, `start_date` — one building at a time, or every building in an area for a sweep | AGPL-3.0 (data ODbL) |
 | [Nominatim](https://nominatim.org/) | Reverse geocoding a pin to a street address | GPL-2.0 (data ODbL) |
-| County assessor parcel layers (ArcGIS / Socrata / CKAN) | Owner of record and parcel ID | Per-county, usually public record |
+| County assessor parcel layers (ArcGIS / Socrata / CKAN) | Owner of record, parcel ID, assessed value, last sale | Per-county, usually public record |
+| Municipal permit layers (ArcGIS / Socrata) | Recent roof work — the strongest *negative* signal | Per-city, usually public record |
+| [NOAA SPC storm reports](https://www.spc.noaa.gov/wcm/) | Observed hail and wind, imported locally | Public domain |
+| [Open-Meteo archive](https://open-meteo.com/en/docs/historical-weather-api) | Damaging-gust days (wind exposure) | CC-BY 4.0 (data), free tier is non-commercial |
 | [Prisma](https://www.prisma.io/) + SQLite | `Property`, `Lead`, `Contact`, `Contract` storage | Apache-2.0 / public domain |
 | [Next.js](https://nextjs.org/) + [React](https://react.dev/) + [Tailwind](https://tailwindcss.com/) | App, API routes, UI | MIT |
 
@@ -36,10 +39,18 @@ parcel lookup is simply reported as not configured.
 | `PARCEL_OWNER_FIELD` | auto-detected | Owner column name, if it isn't one of the common spellings. |
 | `PARCEL_ID_FIELD` | auto-detected | Parcel-number column name. |
 | `PARCEL_YEAR_BUILT_FIELD` | auto-detected | Year-built column name. |
+| `PARCEL_VALUE_FIELD` / `PARCEL_SALE_DATE_FIELD` / `PARCEL_SALE_PRICE_FIELD` | auto-detected | Assessed value and sale columns, if unusually named. |
+| `PERMITS_API_URL` | *(unset)* | Municipal permits ArcGIS layer. Enables the roof-permit suppressor. |
+| `PERMITS_TYPE_FIELD` / `PERMITS_DATE_FIELD` | auto-detected | Permit column names. |
+| `PERMITS_ROOF_KEYWORDS` | `roof,reroof,re-roof,shingle` | What marks a permit as roof work. |
+| `OPEN_METEO_ARCHIVE_URL` | Open-Meteo archive | Point at a self-hosted instance. |
 | `ENRICHMENT_TIMEOUT_MS` | `15000` | Per-request timeout. |
 | `PROPERTY_ENRICHMENT_OFFLINE` | *(unset)* | `1` skips the network entirely and uses derived placeholders. Handy for dev and demos. |
 | `NEXT_PUBLIC_TILE_URL` | OSM tiles | Your own tile server, e.g. a self-hosted TileServer GL. |
 | `NEXT_PUBLIC_TILE_ATTRIBUTION` | `© OpenStreetMap contributors` | Attribution shown on the map. |
+
+**Scoring knobs** (hail radius and window, wind thresholds, neighbour radius) are
+listed in [lead-scoring.md](lead-scoring.md).
 
 ### Using the public endpoints responsibly
 
@@ -51,8 +62,14 @@ anything sustained, **run your own** — Nominatim, Overpass and a tile server a
 self-host with Docker — or use a paid provider. Public Nominatim in particular
 blocks datacenter IP ranges, so a cloud deployment needs its own instance.
 
-Parcel data is public record in most US counties but the *portal* may have its own
-terms. Check the county's licence before bulk use.
+Parcel and permit data are public record in most US jurisdictions but the *portal*
+may have its own terms. Check the licence before bulk use.
+
+**Open-Meteo's free tier is for non-commercial use.** A commercial deployment needs
+their paid API or a self-hosted instance — `OPEN_METEO_ARCHIVE_URL` points at
+either. NOAA SPC data is US federal public domain with no such restriction, which
+is part of why hail, the signal that actually matters here, is the one held
+locally.
 
 ## The wider menu
 
@@ -100,15 +117,27 @@ Self-hosting — [Coolify](https://coolify.io/), [Dokploy](https://dokploy.com/)
 ## How the pieces fit in this codebase
 
 ```
-src/lib/geo.ts                Mercator-free small-area maths: distances, bounds, ring geometry
-src/lib/openData.ts           provider clients (Nominatim, Overpass, parcel) + politeness/retry
+src/lib/geo.ts                small-area maths: distances, bounds, ring geometry
+src/lib/openData.ts           network providers (Nominatim, Overpass, parcel, permits, wind)
+src/lib/localSignals.ts       signals from our own tables: hail radius query, won work nearby
 src/lib/roofing.ts            footprint -> sloped roof area -> squares -> price range
+src/lib/signals.ts            the scoring model — weights, damping, suppression
 src/lib/propertyEnrichment.ts orchestration: run providers, merge, price, persist
+src/lib/propertyScoring.ts    score a stored property and append to its audit trail
+src/lib/propertyQuery.ts      one filter/sort definition shared by list, export and bulk
 src/lib/propertiesApi.ts      browser client for the routes below
-src/app/api/properties/*      REST-ish handlers (list/create, sweep, detail, enrich, convert)
-src/components/map/*          from-scratch tile map, pins, prospect list, detail panel
-prisma/schema.prisma          the Property model and its link to Lead
+src/app/api/properties/*      list, create, sweep, detail, enrich, convert, bulk-lead, export
+src/components/map/*          from-scratch tile map, pins, detail panel
+src/components/prospects/*    the workbench table, score breakdown, signals, activity trail
+prisma/importStormEvents.ts   NOAA SPC importer (npm run import:storms)
+prisma/schema.prisma          Property, PropertyEvent (audit), StormEvent
 ```
+
+### Where the signals meet the score
+
+Enrichment gathers facts; [lead-scoring.md](lead-scoring.md) turns them into a
+ranked work queue. The two are separate on purpose: a provider being down changes
+what we know, not how we reason about it.
 
 ### Two ways to canvass
 

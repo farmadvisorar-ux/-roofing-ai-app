@@ -4,6 +4,8 @@ import { fetchBuildingsInBounds } from "@/lib/openData";
 import { enrichmentStatusFor } from "@/lib/propertyEnrichment";
 import { estimateRoof } from "@/lib/roofing";
 import { DEDUPE_RADIUS_FT, GeoBounds, boundsAreaSqMi, distanceFt, isValidBounds } from "@/lib/geo";
+import { recordEvent, rescoreProperty } from "@/lib/propertyScoring";
+import { PropertyEventKind } from "@/generated/prisma/enums";
 
 export const dynamic = "force-dynamic";
 
@@ -141,7 +143,16 @@ export async function POST(request: NextRequest) {
           enrichedAt: new Date(),
         },
       });
-      created.push(property);
+      await recordEvent({
+        propertyId: property.id,
+        kind: PropertyEventKind.SWEPT,
+        summary: `Pinned by area sweep from ${candidate.osmRef}`,
+        detail: { osmRef: candidate.osmRef, footprintSqFt: facts.footprintSqFt },
+        actor: "sweep",
+      });
+      // Hail and neighbourhood signals are local queries, so a swept roof is
+      // ranked immediately rather than waiting for someone to open it.
+      created.push(await rescoreProperty(property, { silent: true, actor: "sweep" }));
       knownRefs.add(candidate.osmRef);
     } catch (err) {
       // A concurrent sweep of the same block can claim an osmRef first. That is a
@@ -154,8 +165,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Best prospects first, so the rep knows where to start knocking.
-  created.sort((a, b) => (b.estimateHigh ?? 0) - (a.estimateHigh ?? 0));
+  // Best prospects first, so the rep knows where to start knocking. Score leads,
+  // with estimate as the tie-break — a big roof nobody can sell is worth less
+  // than a smaller one with hail damage and an owner who just moved in.
+  created.sort(
+    (a, b) => (b.leadScore ?? 0) - (a.leadScore ?? 0) || (b.estimateHigh ?? 0) - (a.estimateHigh ?? 0),
+  );
 
   return NextResponse.json({
     created,

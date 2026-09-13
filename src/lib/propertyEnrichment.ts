@@ -6,7 +6,8 @@
 import { prisma } from "@/lib/prisma";
 import { ALL_PROVIDERS, GeoPoint, OpenDataProvider, PropertyFacts } from "@/lib/openData";
 import { estimateMidpoint, estimateRoof } from "@/lib/roofing";
-import { EnrichmentStatus } from "@/generated/prisma/enums";
+import { EnrichmentStatus, PropertyEventKind } from "@/generated/prisma/enums";
+import { recordEvent, rescoreProperty } from "@/lib/propertyScoring";
 import type { PropertyModel } from "@/generated/prisma/models";
 import type { ProviderStatus, ProviderStatusResponse } from "@/lib/types";
 
@@ -121,6 +122,15 @@ export async function enrichProperty({ propertyId, force = false }: EnrichProper
       roofShape: facts.roofShape ?? undefined,
       roofMaterial: facts.roofMaterial ?? undefined,
       yearBuilt: facts.yearBuilt ?? undefined,
+      assessedValue: facts.assessedValue ?? undefined,
+      lastSaleDate: facts.lastSaleDate ? new Date(facts.lastSaleDate) : undefined,
+      lastSalePrice: facts.lastSalePrice ?? undefined,
+      lastPermitDate: facts.lastPermitDate ? new Date(facts.lastPermitDate) : undefined,
+      lastPermitType: facts.lastPermitType ?? undefined,
+      roofPermitDate: facts.roofPermitDate ? new Date(facts.roofPermitDate) : undefined,
+      stormWindowYears: facts.stormWindowYears ?? undefined,
+      severeStormDays: facts.severeStormDays ?? undefined,
+      peakGustMph: facts.peakGustMph ?? undefined,
       roofSqFt: estimate.roofSqFt,
       roofSquares: estimate.roofSquares,
       estimateLow: estimate.estimateLow,
@@ -132,6 +142,15 @@ export async function enrichProperty({ propertyId, force = false }: EnrichProper
     },
   });
 
+  await recordEvent({
+    propertyId,
+    kind: PropertyEventKind.ENRICHED,
+    summary:
+      `${status} from ${contributed.join(", ")}` + (errors.length > 0 ? ` (${errors.length} provider failed)` : ""),
+    detail: { sources: contributed, errors, status },
+    actor: "enrichment",
+  });
+
   // Keep a linked lead's pipeline value in step with the refreshed estimate.
   if (updated.leadId) {
     await prisma.lead.update({
@@ -140,7 +159,8 @@ export async function enrichProperty({ propertyId, force = false }: EnrichProper
     });
   }
 
-  return updated;
+  // Fresh facts mean a stale score; the rescore logs its own event.
+  return rescoreProperty(updated, { actor: "enrichment" });
 }
 
 /** Copies set fields onto the accumulator without overwriting earlier providers. Returns true if anything landed. */

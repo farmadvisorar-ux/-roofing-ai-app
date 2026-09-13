@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { estimateMidpoint } from "@/lib/roofing";
-import { LeadSource, LeadStage } from "@/generated/prisma/enums";
+import { LeadSource, LeadStage, PropertyEventKind } from "@/generated/prisma/enums";
+import { recordEvent } from "@/lib/propertyScoring";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,14 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/propert
       property: { connect: { id: property.id } },
     },
     include: { contact: true, shedConfig: true, contracts: true, property: true },
+  });
+
+  await recordEvent({
+    propertyId: property.id,
+    kind: PropertyEventKind.CONVERTED,
+    summary: `Converted to a ${lead.stage} lead for ${name}`,
+    detail: { leadId: lead.id, estimatedValue, score: property.leadScore },
+    actor: "user",
   });
 
   return NextResponse.json({ lead }, { status: 201 });

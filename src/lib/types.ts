@@ -5,7 +5,9 @@ import {
   EnrichmentStatus,
   LeadSource,
   LeadStage,
+  PropertyEventKind,
   RoofStyle,
+  ScoreBand,
 } from "@/generated/prisma/enums";
 
 export interface ContactDTO {
@@ -95,6 +97,49 @@ export interface PropertyDTO {
   leadId: string | null;
   createdAt: string;
   updatedAt: string;
+
+  // Buying signals.
+  assessedValue: number | null;
+  lastSaleDate: string | null;
+  lastSalePrice: number | null;
+  lastPermitDate: string | null;
+  lastPermitType: string | null;
+  roofPermitDate: string | null;
+  hailEventsNearby: number | null;
+  maxHailInches: number | null;
+  lastHailDate: string | null;
+  hailWindowYears: number | null;
+  hailSearchRadiusMi: number | null;
+  stormWindowYears: number | null;
+  severeStormDays: number | null;
+  peakGustMph: number | null;
+
+  // Score. `scoreComponents` is JSON — read it with parseScore() from lib/signals.
+  leadScore: number | null;
+  leadScoreBand: ScoreBand | null;
+  scoreConfidence: number | null;
+  scoreComponents: string | null;
+  scoredAt: string | null;
+
+  /** Included by GET /api/properties/:id only. */
+  events?: PropertyEventDTO[];
+}
+
+export interface PropertyEventDTO {
+  id: string;
+  kind: PropertyEventKind;
+  summary: string;
+  detail: string | null;
+  actor: string | null;
+  createdAt: string;
+}
+
+export interface PropertyPage {
+  properties: PropertyDTO[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
 }
 
 /** Which open-data lookups a deployment can perform (GET /api/enrichment/providers). */

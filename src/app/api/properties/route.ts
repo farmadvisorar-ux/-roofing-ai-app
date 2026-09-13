@@ -1,45 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { enrichProperty } from "@/lib/propertyEnrichment";
-import { EnrichmentStatus } from "@/generated/prisma/enums";
-import { DEDUPE_RADIUS_FT, GeoBounds, degreeDeltas, distanceFt, isValidBounds } from "@/lib/geo";
+import { recordEvent, rescoreProperty } from "@/lib/propertyScoring";
+import { PropertyEventKind } from "@/generated/prisma/enums";
+import { DEDUPE_RADIUS_FT, degreeDeltas, distanceFt } from "@/lib/geo";
+import { QueryError, buildOrderBy, buildWhere, parsePropertyQuery } from "@/lib/propertyQuery";
 
 export const dynamic = "force-dynamic";
 
-const MAX_LIMIT = 500;
-const DEFAULT_LIMIT = 200;
-
-/** GET /api/properties — map pins, optionally limited to the viewport. */
+/** GET /api/properties — filtered, sorted, paginated. Also serves the map's viewport. */
 export async function GET(request: NextRequest) {
-  const q = request.nextUrl.searchParams;
-
-  const bbox = readBbox(q);
-  if (bbox === "invalid") {
-    return NextResponse.json({ error: "bbox requires numeric minLat, minLng, maxLat, maxLng" }, { status: 400 });
+  let query;
+  try {
+    query = parsePropertyQuery(request.nextUrl.searchParams);
+  } catch (err) {
+    if (err instanceof QueryError) return NextResponse.json({ error: err.message }, { status: 400 });
+    throw err;
   }
 
-  const status = q.get("status");
-  if (status && !Object.values(EnrichmentStatus).includes(status as EnrichmentStatus)) {
-    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
-  }
+  const where = buildWhere(query);
+  const [properties, total] = await Promise.all([
+    prisma.property.findMany({
+      where,
+      orderBy: buildOrderBy(query),
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+    }),
+    prisma.property.count({ where }),
+  ]);
 
-  const limit = clampLimit(q.get("limit"));
-  // ?unworked=1 hides properties already converted into a lead.
-  const unworked = q.get("unworked") === "1";
-
-  const properties = await prisma.property.findMany({
-    where: {
-      ...(bbox
-        ? { lat: { gte: bbox.minLat, lte: bbox.maxLat }, lng: { gte: bbox.minLng, lte: bbox.maxLng } }
-        : {}),
-      ...(status ? { enrichmentStatus: status as EnrichmentStatus } : {}),
-      ...(unworked ? { leadId: null } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: limit,
+  return NextResponse.json({
+    properties,
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+    pageCount: Math.max(1, Math.ceil(total / query.pageSize)),
   });
-
-  return NextResponse.json({ properties });
 }
 
 interface CreatePropertyBody {
@@ -75,9 +71,19 @@ export async function POST(request: NextRequest) {
   let property = await prisma.property.create({
     data: { lat, lng, notes: body.notes?.trim() || null },
   });
+  await recordEvent({
+    propertyId: property.id,
+    kind: PropertyEventKind.CREATED,
+    summary: `Pinned at ${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+    actor: "map",
+  });
 
   if (body.enrich) {
     property = await enrichProperty({ propertyId: property.id });
+  } else {
+    // Even an unenriched pin gets hail and neighbourhood signals, which come
+    // from our own tables and need no lookup.
+    property = await rescoreProperty(property, { actor: "map" });
   }
 
   return NextResponse.json({ property }, { status: 201 });
@@ -99,21 +105,4 @@ async function findNearbyProperty(lat: number, lng: number) {
   });
 
   return candidates.find((c) => distanceFt(c, { lat, lng }) <= DEDUPE_RADIUS_FT) ?? null;
-}
-
-function readBbox(q: URLSearchParams): GeoBounds | null | "invalid" {
-  const keys = ["minLat", "minLng", "maxLat", "maxLng"] as const;
-  const present = keys.filter((k) => q.get(k) !== null);
-  if (present.length === 0) return null;
-  if (present.length !== keys.length) return "invalid";
-
-  const [minLat, minLng, maxLat, maxLng] = keys.map((k) => Number(q.get(k)));
-  const bounds = { minLat, minLng, maxLat, maxLng };
-  return isValidBounds(bounds) ? bounds : "invalid";
-}
-
-function clampLimit(raw: string | null): number {
-  const n = raw === null ? DEFAULT_LIMIT : Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(Math.floor(n), MAX_LIMIT);
 }
