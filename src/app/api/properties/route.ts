@@ -2,18 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { enrichProperty } from "@/lib/propertyEnrichment";
 import { EnrichmentStatus } from "@/generated/prisma/enums";
+import { DEDUPE_RADIUS_FT, GeoBounds, degreeDeltas, distanceFt, isValidBounds } from "@/lib/geo";
 
 export const dynamic = "force-dynamic";
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 200;
-
-/**
- * Two pins this close are the same roof. Dropping a second pin on a house you
- * already canvassed returns the existing property instead of duplicating it.
- */
-const DEDUPE_RADIUS_FT = 30;
-const FT_PER_DEG_LAT = 364000;
 
 /** GET /api/properties — map pins, optionally limited to the viewport. */
 export async function GET(request: NextRequest) {
@@ -94,10 +88,7 @@ export async function POST(request: NextRequest) {
  * shrinks with latitude, so a square in degrees is not a circle on the ground.
  */
 async function findNearbyProperty(lat: number, lng: number) {
-  const latDelta = DEDUPE_RADIUS_FT / FT_PER_DEG_LAT;
-  const ftPerDegLng = FT_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180);
-  // Guard the poles, where a foot spans an unbounded number of degrees.
-  const lngDelta = ftPerDegLng > 1 ? DEDUPE_RADIUS_FT / ftPerDegLng : 180;
+  const { latDelta, lngDelta } = degreeDeltas(lat, DEDUPE_RADIUS_FT);
 
   const candidates = await prisma.property.findMany({
     where: {
@@ -107,27 +98,18 @@ async function findNearbyProperty(lat: number, lng: number) {
     take: 25,
   });
 
-  for (const candidate of candidates) {
-    const dLat = (candidate.lat - lat) * FT_PER_DEG_LAT;
-    const dLng = (candidate.lng - lng) * ftPerDegLng;
-    if (Math.hypot(dLat, dLng) <= DEDUPE_RADIUS_FT) return candidate;
-  }
-  return null;
+  return candidates.find((c) => distanceFt(c, { lat, lng }) <= DEDUPE_RADIUS_FT) ?? null;
 }
 
-type Bbox = { minLat: number; minLng: number; maxLat: number; maxLng: number };
-
-function readBbox(q: URLSearchParams): Bbox | null | "invalid" {
+function readBbox(q: URLSearchParams): GeoBounds | null | "invalid" {
   const keys = ["minLat", "minLng", "maxLat", "maxLng"] as const;
   const present = keys.filter((k) => q.get(k) !== null);
   if (present.length === 0) return null;
   if (present.length !== keys.length) return "invalid";
 
-  const values = keys.map((k) => Number(q.get(k)));
-  if (values.some((v) => !Number.isFinite(v))) return "invalid";
-  const [minLat, minLng, maxLat, maxLng] = values;
-  if (minLat > maxLat || minLng > maxLng) return "invalid";
-  return { minLat, minLng, maxLat, maxLng };
+  const [minLat, minLng, maxLat, maxLng] = keys.map((k) => Number(q.get(k)));
+  const bounds = { minLat, minLng, maxLat, maxLng };
+  return isValidBounds(bounds) ? bounds : "invalid";
 }
 
 function clampLimit(raw: string | null): number {

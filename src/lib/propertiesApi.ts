@@ -55,6 +55,23 @@ export async function listProperties(
   return properties;
 }
 
+export interface SweepResult {
+  /** Newly pinned roofs, best estimate first. */
+  created: PropertyDTO[];
+  createdCount: number;
+  /** Buildings already pinned from an earlier sweep or tap. */
+  skipped: number;
+  found: number;
+  /** True when the area held more buildings than the limit allowed. */
+  truncated: boolean;
+  areaSqMi: number;
+}
+
+/** Pins every building in an area at once. */
+export async function sweepArea(bbox: MapBbox, limit?: number): Promise<SweepResult> {
+  return request<SweepResult>("/api/properties/sweep", json({ ...bbox, limit }));
+}
+
 export async function fetchProperty(id: string): Promise<PropertyDTO> {
   const { property } = await request<{ property: PropertyDTO }>(`/api/properties/${id}`);
   return property;

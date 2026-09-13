@@ -187,27 +187,6 @@ function normalizeMaterial(material?: string | null): string | null {
   return key in MATERIAL_MULTIPLIER ? key : null;
 }
 
-/**
- * Planar area of a lat/lng ring in square feet, via the shoelace formula on a
- * local equirectangular projection. Building footprints are small enough that
- * the projection error is well under the error in the estimate itself.
- */
-export function ringAreaSqFt(ring: { lat: number; lng: number }[]): number {
-  if (ring.length < 3) return 0;
-
-  const latRef = ring.reduce((sum, p) => sum + p.lat, 0) / ring.length;
-  const FT_PER_DEG_LAT = 364000;
-  const ftPerDegLng = FT_PER_DEG_LAT * Math.cos((latRef * Math.PI) / 180);
-
-  let sum = 0;
-  for (let i = 0; i < ring.length; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % ring.length];
-    sum += a.lng * ftPerDegLng * (b.lat * FT_PER_DEG_LAT) - b.lng * ftPerDegLng * (a.lat * FT_PER_DEG_LAT);
-  }
-  return Math.abs(sum) / 2;
-}
-
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }

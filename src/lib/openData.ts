@@ -7,12 +7,15 @@
 //
 // No provider is required: each one reports whether it is configured, and the
 // pipeline merges whatever comes back. See docs/open-source-lead-stack.md.
-import { ringAreaSqFt } from "@/lib/roofing";
+import {
+  GeoBounds,
+  GeoPoint,
+  pointInRing,
+  ringAreaSqFt,
+  ringPointOnSurface,
+} from "@/lib/geo";
 
-export interface GeoPoint {
-  lat: number;
-  lng: number;
-}
+export type { GeoPoint };
 
 /** Everything a provider can contribute about a property. All fields optional. */
 export interface PropertyFacts {
@@ -178,24 +181,110 @@ export const overpassProvider: OpenDataProvider = {
     const building = pickBuilding(body.elements ?? [], point);
     if (!building) return null;
 
-    const tags = building.tags ?? {};
-    const ring = (building.geometry ?? []).map((p) => ({ lat: p.lat, lng: p.lon }));
-    const street = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ").trim();
-
-    return {
-      osmRef: `${building.type}/${building.id}`,
-      footprintSqFt: ring.length >= 3 ? Math.round(ringAreaSqFt(ring)) : null,
-      buildingLevels: parseIntOrNull(tags["building:levels"]),
-      roofShape: tags["roof:shape"] ?? null,
-      roofMaterial: tags["roof:material"] ?? null,
-      yearBuilt: parseYearOrNull(tags["start_date"]),
-      address: street || null,
-      city: tags["addr:city"] ?? null,
-      state: tags["addr:state"] ?? null,
-      zip: tags["addr:postcode"] ?? null,
-    };
+    return buildingFacts(building);
   },
 };
+
+function elementRing(element: OverpassElement): GeoPoint[] {
+  return (element.geometry ?? []).map((p) => ({ lat: p.lat, lng: p.lon }));
+}
+
+/** Everything one OSM building element tells us. */
+function buildingFacts(element: OverpassElement): PropertyFacts {
+  const tags = element.tags ?? {};
+  const ring = elementRing(element);
+  const street = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ").trim();
+
+  return {
+    osmRef: `${element.type}/${element.id}`,
+    footprintSqFt: ring.length >= 3 ? Math.round(ringAreaSqFt(ring)) : null,
+    buildingLevels: parseIntOrNull(tags["building:levels"]),
+    roofShape: tags["roof:shape"] ?? null,
+    roofMaterial: tags["roof:material"] ?? null,
+    yearBuilt: parseYearOrNull(tags["start_date"]),
+    address: street || null,
+    city: tags["addr:city"] ?? null,
+    state: tags["addr:state"] ?? null,
+    zip: tags["addr:postcode"] ?? null,
+  };
+}
+
+// --- Area sweep: every building in a bounding box, in one query ------------
+
+/** Structures that are never a roofing job — garden sheds, garages, kiosks. */
+const SWEEP_SKIP_BUILDING_TYPES = new Set([
+  "garage",
+  "garages",
+  "shed",
+  "carport",
+  "roof",
+  "greenhouse",
+  "hut",
+  "bunker",
+  "container",
+  "tent",
+  "kiosk",
+  "transformer_tower",
+  "silo",
+  "storage_tank",
+  "service",
+]);
+
+/** Below this a footprint is an outbuilding, not a house. */
+const SWEEP_MIN_FOOTPRINT_SQFT = 400;
+
+export interface BuildingCandidate {
+  osmRef: string;
+  /** Where the pin goes — the building's own centroid, not the tap point. */
+  centroid: GeoPoint;
+  facts: PropertyFacts;
+}
+
+/**
+ * Every mappable building in an area, in a single Overpass call.
+ *
+ * This deliberately does not geocode or look up owners per building — that would
+ * be one throttled request each. Most OSM buildings carry their own `addr:*`
+ * tags, which is enough to work a street; run the full per-property enrichment
+ * on the ones worth pursuing.
+ */
+export async function fetchBuildingsInBounds(
+  bounds: GeoBounds,
+  limit: number,
+): Promise<BuildingCandidate[]> {
+  const url = process.env.OSM_OVERPASS_URL ?? "https://overpass-api.de/api/interpreter";
+  // Overpass bounding boxes are (south, west, north, east).
+  const bbox = `${bounds.minLat},${bounds.minLng},${bounds.maxLat},${bounds.maxLng}`;
+  const query = `[out:json][timeout:60];way["building"](${bbox});out tags geom ${limit};`;
+
+  const res = await politeFetch(url, 1100, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ data: query }).toString(),
+  });
+  if (!res.ok) throw new Error(`Overpass returned ${res.status}`);
+
+  const body = (await res.json()) as OverpassResponse;
+  const candidates: BuildingCandidate[] = [];
+
+  for (const element of body.elements ?? []) {
+    const ring = elementRing(element);
+    if (ring.length < 3) continue;
+
+    const buildingTag = element.tags?.building;
+    if (buildingTag && SWEEP_SKIP_BUILDING_TYPES.has(buildingTag)) continue;
+
+    const facts = buildingFacts(element);
+    if ((facts.footprintSqFt ?? 0) < SWEEP_MIN_FOOTPRINT_SQFT) continue;
+
+    const centroid = ringPointOnSurface(ring);
+    if (!centroid) continue;
+
+    candidates.push({ osmRef: facts.osmRef as string, centroid, facts });
+  }
+
+  return candidates;
+}
 
 /**
  * Prefer a building whose footprint actually contains the pin; otherwise take
@@ -205,9 +294,7 @@ function pickBuilding(elements: OverpassElement[], point: GeoPoint): OverpassEle
   const withGeometry = elements.filter((el) => (el.geometry?.length ?? 0) >= 3);
   if (withGeometry.length === 0) return null;
 
-  const containing = withGeometry.find((el) =>
-    pointInRing(point, (el.geometry ?? []).map((p) => ({ lat: p.lat, lng: p.lon }))),
-  );
+  const containing = withGeometry.find((el) => pointInRing(point, elementRing(el)));
   if (containing) return containing;
 
   let best: OverpassElement | null = null;
@@ -224,20 +311,6 @@ function pickBuilding(elements: OverpassElement[], point: GeoPoint): OverpassEle
     }
   }
   return best;
-}
-
-/** Standard even-odd ray cast. */
-export function pointInRing(point: GeoPoint, ring: GeoPoint[]): boolean {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const a = ring[i];
-    const b = ring[j];
-    const straddles = a.lat > point.lat !== b.lat > point.lat;
-    if (!straddles) continue;
-    const x = ((b.lng - a.lng) * (point.lat - a.lat)) / (b.lat - a.lat) + a.lng;
-    if (point.lng < x) inside = !inside;
-  }
-  return inside;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,23 @@ export interface EnrichPropertyArgs {
   force?: boolean;
 }
 
+/**
+ * Only a real source can mark a property ENRICHED. Derived placeholders keep it
+ * PARTIAL however complete the record looks, so nobody quotes off a guess.
+ */
+export function enrichmentStatusFor(signals: {
+  hasRealSource: boolean;
+  haveAddress: boolean;
+  haveFootprint: boolean;
+  hadErrors: boolean;
+}): EnrichmentStatus {
+  if (signals.hasRealSource && signals.haveAddress && signals.haveFootprint) {
+    return EnrichmentStatus.ENRICHED;
+  }
+  if (!signals.hasRealSource && signals.hadErrors) return EnrichmentStatus.FAILED;
+  return EnrichmentStatus.PARTIAL;
+}
+
 export class PropertyNotFoundError extends Error {
   constructor(propertyId: string) {
     super(`Property ${propertyId} not found`);
@@ -79,16 +96,12 @@ export async function enrichProperty({ propertyId, force = false }: EnrichProper
     buildingLevels: facts.buildingLevels ?? property.buildingLevels,
   });
 
-  // Only a real source can mark a property ENRICHED. Derived placeholders keep it
-  // PARTIAL however complete the record looks, so nobody quotes off a guess.
-  const haveAddress = Boolean(facts.address ?? property.address);
-  const haveFootprint = Boolean(facts.footprintSqFt ?? property.footprintSqFt);
-  let status: EnrichmentStatus = EnrichmentStatus.PARTIAL;
-  if (realSources.length > 0 && haveAddress && haveFootprint) {
-    status = EnrichmentStatus.ENRICHED;
-  } else if (realSources.length === 0 && errors.length > 0) {
-    status = EnrichmentStatus.FAILED;
-  }
+  const status = enrichmentStatusFor({
+    hasRealSource: realSources.length > 0,
+    haveAddress: Boolean(facts.address ?? property.address),
+    haveFootprint: Boolean(facts.footprintSqFt ?? property.footprintSqFt),
+    hadErrors: errors.length > 0,
+  });
 
   const osmRef = await osmRefIfFree(facts.osmRef, propertyId);
 

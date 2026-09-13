@@ -14,8 +14,9 @@ A shed sales app with three pieces baked into one codebase:
    schedules, and e-signature capture.
 4. **A canvassing map that generates its own leads** — tap a roof, and it is pinned, looked up in
    open data (address, owner of record, building footprint, roof shape), measured, priced, and
-   convertible into a pipeline lead in one step. Built on OpenStreetMap and county parcel layers,
-   with a from-scratch tile map rather than a mapping SDK.
+   convertible into a pipeline lead in one step. Or sweep the whole visible block at once and get
+   every roof in it pinned and priced, ranked best-first. Built on OpenStreetMap and county parcel
+   layers, with a from-scratch tile map rather than a mapping SDK.
 
 ## Stack
 
@@ -90,6 +91,21 @@ a property to `ENRICHED`.
 `/crm` alongside configurator quotes. Unlike the configurator form, it does not
 require an email or phone — when you are door-knocking you have an address long
 before you have contact details.
+
+### Sweeping a whole block
+
+**Sweep this view** (`POST /api/properties/sweep`) pins every building in the
+visible area in one Overpass query rather than one tap at a time. Most OSM
+buildings carry their own `addr:*` tags, so a sweep usually gets addresses for
+free; it deliberately does *not* geocode or look up owners per building, since
+that would be hundreds of throttled requests. Run the full per-property
+enrichment on the roofs worth pursuing.
+
+Sweeps are safe to repeat: a building's OSM way id is its identity, so re-sweeping
+a block adds only what is new. Proximity de-duplication applies only to
+hand-dropped pins, which have no id — two OSM buildings are two buildings even
+when they share a party wall. Garages, sheds and footprints under 400 sq ft are
+skipped, and the area is capped at 1 sq mi per sweep.
 
 ## Notes on the AR fallback
 
