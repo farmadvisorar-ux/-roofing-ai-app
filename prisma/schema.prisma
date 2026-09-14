@@ -25,6 +25,40 @@ enum LeadSource {
   MANUAL
   PHONE
   REFERRAL
+  CANVASSING
+}
+
+enum EnrichmentStatus {
+  PENDING
+  ENRICHED
+  PARTIAL
+  FAILED
+}
+
+enum ScoreBand {
+  HOT
+  WARM
+  COOL
+  COLD
+  /// Too little is known to call it either way — not a verdict, an absence of one.
+  UNRATED
+}
+
+/// What happened to a property. Every change to a record a rep will act on is
+/// logged, so "why is this a 84?" always has an answer.
+enum StormKind {
+  HAIL
+  WIND
+}
+
+enum PropertyEventKind {
+  CREATED
+  SWEPT
+  ENRICHED
+  SCORED
+  MEASURED
+  CONVERTED
+  UPDATED
 }
 
 enum ContractType {
@@ -74,6 +108,7 @@ model Lead {
 
   shedConfig ShedConfig?
   contracts  Contract[]
+  property   Property?
 }
 
 model ShedConfig {
@@ -112,4 +147,160 @@ model Contract {
   signedAt       DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+}
+
+/// A roof we might sell to, pinned on the canvassing map. Created from a map tap
+/// (often before we know anything about it), then filled in by the enrichment
+/// pipeline in src/lib/propertyEnrichment.ts from open data sources.
+model Property {
+  id  String @id @default(cuid())
+  lat Float
+  lng Float
+
+  // Reverse-geocoded address (OpenStreetMap / Nominatim).
+  address String?
+  city    String?
+  state   String?
+  zip     String?
+
+  /// Which service region this roof sits in (src/lib/territories.ts). Assigned
+  /// from the coordinates, and corrected once reverse geocoding supplies a state.
+  territory String?
+
+  // Ownership, from a county assessor / parcel open-data endpoint.
+  ownerName String?
+  parcelId  String?
+
+  // Building facts (OpenStreetMap buildings, via Overpass).
+  osmRef         String? @unique
+  footprintSqFt  Float?
+  buildingLevels Int?
+  roofShape      String?
+  roofMaterial   String?
+  yearBuilt      Int?
+
+  // Roof estimate derived from the facts above (src/lib/roofing.ts).
+  roofSqFt     Float?
+  roofSquares  Float?
+  estimateLow  Float?
+  estimateHigh Float?
+
+  // --- Buying signals -----------------------------------------------------
+  // Assessor record: a house that changed hands recently is a far warmer lead.
+  assessedValue Float?
+  lastSaleDate  DateTime?
+  lastSalePrice Float?
+
+  // Permit record. A recent roofing permit is the strongest negative signal
+  // there is — that roof was just done, so don't knock.
+  lastPermitDate DateTime?
+  lastPermitType String?
+  roofPermitDate DateTime?
+
+  // Observed hail near this address, from the locally imported NOAA storm
+  // reports. The single most predictive signal in roofing: a 2" hail event a
+  // year ago means most roofs on that street have a claim on them.
+  hailEventsNearby   Int?
+  maxHailInches      Float?
+  lastHailDate       DateTime?
+  /// True when the most recent hail behind this score is still an unverified
+  /// SPC daily report — worth knowing before quoting off it.
+  hailIsPreliminary  Boolean?
+  hailWindowYears    Int?
+  hailSearchRadiusMi Float?
+
+  // Wind exposure from the Open-Meteo archive. A weaker, complementary signal:
+  // reanalysis captures sustained wind well but does not resolve convective
+  // storms, so it ranks windy coastlines above hail country on its own.
+  stormWindowYears Int?
+  severeStormDays  Int?
+  peakGustMph      Float?
+
+  // Explainable score, 0-100. `scoreComponents` holds the per-signal breakdown
+  // as JSON and `scoreConfidence` how much of the model had data to work with.
+  leadScore       Int?
+  leadScoreBand   ScoreBand?
+  scoreConfidence Float?
+  scoreComponents String?
+  scoredAt        DateTime?
+
+  enrichmentStatus  EnrichmentStatus @default(PENDING)
+  enrichmentSources String? // comma-separated provider ids that contributed
+  enrichmentError   String?
+  enrichedAt        DateTime?
+
+  notes String?
+
+  // Set once the property has been worked into the pipeline. Deleting the lead
+  // keeps the pin on the map — the roof still exists, it just isn't a lead now.
+  leadId String? @unique
+  lead   Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events PropertyEvent[]
+
+  @@index([lat, lng])
+  @@index([leadScore])
+  @@index([enrichmentStatus])
+  @@index([territory])
+}
+
+/// Observed severe-weather reports, imported from NOAA SPC (public domain) by
+/// `npm run import:storms`. Held locally so scoring a property costs a indexed
+/// query rather than a third-party API call per address.
+model StormEvent {
+  id         String    @id @default(cuid())
+  kind       StormKind
+  occurredAt DateTime
+  lat        Float
+  lng        Float
+  /// Hail diameter in inches, or gust speed in knots for wind reports.
+  magnitude  Float?
+  state      String?
+  /// Stable identity from the source file, so re-importing cannot duplicate.
+  sourceKey  String    @unique
+  /// Which SPC feed this came from: "archive", "annual" or "daily".
+  source     String    @default("archive")
+  /// True while the report is unverified. SPC quality-controls the previous
+  /// year's reports into the confirmed archive, which then supersedes these.
+  preliminary Boolean  @default(false)
+
+  @@index([occurredAt])
+  @@index([lat, lng])
+  @@index([preliminary])
+}
+
+/// Which days of SPC's daily preliminary feed have been pulled.
+///
+/// Needed because a genuinely quiet day yields an empty file, and without a
+/// record of having asked we would re-fetch it forever. Lets the catch-up run
+/// on a cron and only request what it is missing.
+model StormIngestDay {
+  id        String    @id @default(cuid())
+  /// The SPC convective day (12Z-12Z) this file covers, as YYYY-MM-DD.
+  day       String
+  kind      StormKind
+  reports   Int       @default(0)
+  fetchedAt DateTime  @default(now())
+
+  @@unique([day, kind])
+  @@index([day])
+}
+
+/// Append-only trail of what happened to a property and what changed it.
+model PropertyEvent {
+  id         String            @id @default(cuid())
+  propertyId String
+  property   Property          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  kind       PropertyEventKind
+  summary    String
+  /// JSON detail — the provider results or field changes behind this event.
+  detail     String?
+  /// Who or what caused it: a provider id, "sweep", or a user identifier.
+  actor      String?
+  createdAt  DateTime          @default(now())
+
+  @@index([propertyId, createdAt])
 }

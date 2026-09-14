@@ -1,0 +1,131 @@
+// Signals we compute from our own tables rather than fetching per address.
+//
+// Both of these would be an HTTP round trip per property if they lived behind an
+// API. Held locally they cost an indexed query, which is what makes scoring a
+// 300-building sweep practical.
+import { prisma } from "@/lib/prisma";
+import { GeoPoint, degreeDeltas, distanceFt } from "@/lib/geo";
+import { LeadStage, StormKind } from "@/generated/prisma/enums";
+import { hailStrength } from "@/lib/signals";
+
+const FT_PER_MILE = 5280;
+
+/** Hail this far away still fell on the same neighbourhood. */
+const HAIL_SEARCH_RADIUS_MI = Number(process.env.HAIL_SEARCH_RADIUS_MI ?? 10);
+/**
+ * Insurance carriers generally require a claim within one to two years of the
+ * event, so hail much older than this no longer converts.
+ */
+const HAIL_WINDOW_YEARS = Number(process.env.HAIL_WINDOW_YEARS ?? 5);
+
+/**
+ * Whether any storm reports have been imported at all. Checked once rather than
+ * once per property: a sweep scores hundreds of roofs in a loop, and each was
+ * paying for a separate round trip just to ask whether the table was empty.
+ * Cleared by the importers, which are separate processes, so this only has to
+ * survive within a single server lifetime.
+ */
+let stormDataPresent: boolean | null = null;
+
+export function resetStormDataCache(): void {
+  stormDataPresent = null;
+}
+
+async function hasStormData(): Promise<boolean> {
+  if (stormDataPresent === null) {
+    stormDataPresent = (await prisma.stormEvent.findFirst({ select: { id: true } })) !== null;
+  }
+  return stormDataPresent;
+}
+
+/** Won work this close is genuine social proof on the doorstep. */
+const NEIGHBOUR_RADIUS_MI = Number(process.env.NEIGHBOUR_RADIUS_MI ?? 0.5);
+
+export interface HailExposure {
+  hailEventsNearby: number;
+  /** Size of the driving event — not the largest ever, the strongest case now. */
+  maxHailInches: number | null;
+  /** When that same event happened. */
+  lastHailDate: Date | null;
+  /** True when the most recent nearby report is still unverified. */
+  hailIsPreliminary: boolean | null;
+  hailWindowYears: number;
+  hailSearchRadiusMi: number;
+}
+
+/**
+ * Observed hail near a point, from the imported NOAA reports.
+ *
+ * Returns null when no storm data has been imported at all — that is "unknown",
+ * which the scoring model treats very differently from "no hail here".
+ */
+export async function hailExposure(point: GeoPoint): Promise<HailExposure | null> {
+  if (!(await hasStormData())) return null;
+
+  const since = new Date();
+  since.setFullYear(since.getFullYear() - HAIL_WINDOW_YEARS);
+
+  const radiusFt = HAIL_SEARCH_RADIUS_MI * FT_PER_MILE;
+  const { latDelta, lngDelta } = degreeDeltas(point.lat, radiusFt);
+
+  // Bounding box first so the lat/lng index does the work, then measure exactly.
+  const candidates = await prisma.stormEvent.findMany({
+    where: {
+      kind: StormKind.HAIL,
+      occurredAt: { gte: since },
+      lat: { gte: point.lat - latDelta, lte: point.lat + latDelta },
+      lng: { gte: point.lng - lngDelta, lte: point.lng + lngDelta },
+    },
+    select: { lat: true, lng: true, magnitude: true, occurredAt: true, preliminary: true },
+  });
+
+  // Pick the single event with the strongest case rather than pairing the largest
+  // hail ever seen with the most recent date — those are usually different storms,
+  // and reporting them together overstates both.
+  let count = 0;
+  let best: { inches: number | null; at: Date; preliminary: boolean; strength: number } | null = null;
+  const now = Date.now();
+
+  for (const event of candidates) {
+    if (distanceFt(point, event) > radiusFt) continue;
+    count++;
+
+    const yearsSince = Math.max(0, (now - event.occurredAt.getTime()) / 31_557_600_000);
+    const strength = hailStrength(event.magnitude, yearsSince, HAIL_WINDOW_YEARS);
+    // Ties break toward the more recent storm: same case, fresher conversation.
+    if (
+      best === null ||
+      strength > best.strength ||
+      (strength === best.strength && event.occurredAt > best.at)
+    ) {
+      best = { inches: event.magnitude, at: event.occurredAt, preliminary: event.preliminary, strength };
+    }
+  }
+
+  return {
+    hailEventsNearby: count,
+    maxHailInches: best?.inches ?? null,
+    lastHailDate: best?.at ?? null,
+    hailIsPreliminary: best?.preliminary ?? null,
+    hailWindowYears: HAIL_WINDOW_YEARS,
+    hailSearchRadiusMi: HAIL_SEARCH_RADIUS_MI,
+  };
+}
+
+/** How many jobs we have already won within a short walk. */
+export async function nearbyWonLeads(point: GeoPoint, excludePropertyId?: string): Promise<number> {
+  const radiusFt = NEIGHBOUR_RADIUS_MI * FT_PER_MILE;
+  const { latDelta, lngDelta } = degreeDeltas(point.lat, radiusFt);
+
+  const nearby = await prisma.property.findMany({
+    where: {
+      id: excludePropertyId ? { not: excludePropertyId } : undefined,
+      lat: { gte: point.lat - latDelta, lte: point.lat + latDelta },
+      lng: { gte: point.lng - lngDelta, lte: point.lng + lngDelta },
+      lead: { stage: LeadStage.WON },
+    },
+    select: { lat: true, lng: true },
+  });
+
+  return nearby.filter((p) => distanceFt(point, p) <= radiusFt).length;
+}

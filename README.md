@@ -12,6 +12,21 @@ A shed sales app with three pieces baked into one codebase:
    Contact + Lead + saved shed config, tracked through a pipeline (New → Contacted → Quoted →
    Negotiating → Won/Lost), with cash/finance/rent-to-own contract generation, amortization
    schedules, and e-signature capture.
+4. **A canvassing map that generates its own leads** — tap a roof, and it is pinned, looked up in
+   open data (address, owner of record, building footprint, roof shape), measured, priced, and
+   convertible into a pipeline lead in one step. Or sweep the whole visible block at once and get
+   every roof in it pinned and priced, ranked best-first. Built on OpenStreetMap and county parcel
+   layers, with a from-scratch tile map rather than a mapping SDK.
+5. **A defined service footprint** — eight regions across Texas and Louisiana (North, East, West,
+   South and Central Texas; West, Northeast and Southeast Louisiana). Every roof is assigned to
+   one, storm data is imported to match, the map jumps between them, and the workbench shows live
+   coverage per region. See [docs/service-footprint.md](docs/service-footprint.md).
+6. **Buying signals and an explainable score** — roof age against material service life, observed
+   NOAA hail near the address, ownership changes, assessed value, wind exposure, and roofing
+   permits that suppress a roof already done. Every point is attributable to a named signal, and
+   missing data lowers confidence rather than scoring as bad. The `/prospects` workbench sorts,
+   filters, exports and bulk-converts on it, and every change is recorded in a per-property audit
+   trail.
 
 ## Stack
 
@@ -21,19 +36,38 @@ A shed sales app with three pieces baked into one codebase:
   controls, and WebXR session controller
 - `qrcode` for generating the "scan to view in AR" QR codes (unrelated to the 3D/AR rendering
   itself)
+- No mapping library either — `src/components/map/TileMap.tsx` is a small slippy map written
+  against the Web Mercator formulas, over OpenStreetMap raster tiles
+- Property enrichment runs on open data only: OpenStreetMap (Nominatim + Overpass) and your
+  county's parcel layer. See [docs/open-source-lead-stack.md](docs/open-source-lead-stack.md).
 
 ## Getting started
 
 ```bash
 npm install
-npx prisma migrate dev   # creates prisma/dev.db and applies the schema
-npm run db:seed          # optional: adds a few sample leads
+npx prisma migrate dev   # creates dev.db and applies the schema
+npm run db:seed          # optional: adds sample leads and canvassing pins
+npm run import:storms         # optional: NOAA hail/wind history, for the hail signal
+npm run import:storms:recent  # optional: SPC's daily feed, for storms this week
 npm run dev
 ```
+
+`import:storms` pulls the last 10 years of NOAA SPC severe-weather reports (public
+domain) into a local table, scoped by default to the service footprint's states —
+Texas and Louisiana. Narrow it with `-- --territory east-texas`, widen it with
+`-- --all-states`. Without it the hail signal simply reports itself as unavailable.
+
+`import:storms:recent` adds SPC's daily preliminary reports, which is what closes
+the gap between the confirmed archive and this week. It is incremental and safe on
+a cron. Preliminary reports are flagged as such wherever they appear, because they
+have not been through quality control.
 
 Open `http://localhost:3000`:
 
 - `/configurator` — design a shed in 3D, get a live price, submit a quote (creates a CRM lead)
+- `/map` — canvassing map: tap roofs to pin, enrich, measure and price them, then convert to leads
+- `/prospects` — workbench over every canvassed roof: score, filters, sorting, CSV export, bulk
+  convert, and a drawer explaining each score signal by signal
 - `/ar?leadId=...` (or `/ar?<config query params>`) — open on a phone to place the shed in AR
 - `/crm` — pipeline board of leads
 - `/crm/leads/[id]` — lead detail, saved 3D config, AR QR code
@@ -45,16 +79,82 @@ Open `http://localhost:3000`:
 src/engine/        proprietary WebGL2 3D engine (math, geometry, renderer, orbit controls, WebXR)
 src/lib/shed.ts     shed configuration type + pricing model (shared client/server)
 src/lib/financing.ts loan/RTO payment math (shared client/server)
+src/lib/roofing.ts   roof measurement + re-roof estimate math (shared client/server)
+src/lib/openData.ts  OpenStreetMap / parcel / permit / weather clients
+src/lib/localSignals.ts  hail and neighbourhood signals queried from our own tables
+src/lib/territories.ts  the service footprint: regions, bounds, point-to-region lookup
+src/lib/signals.ts   the lead scoring model (see docs/lead-scoring.md)
+src/lib/propertyEnrichment.ts  runs those lookups, merges them, prices the roof, saves it
+src/lib/propertyScoring.ts  scores a stored property and appends to its audit trail
 src/components/     React UI: 3D viewer, AR viewer, configurator, CRM screens
-src/app/api/         REST-ish route handlers backed by Prisma (leads, contracts)
-prisma/schema.prisma  Contact / Lead / ShedConfig / Contract models
+src/components/map/  canvassing map: tile map, pins, property detail panel
+src/components/prospects/  workbench table, score breakdown, signals, activity trail
+src/app/api/         REST-ish route handlers backed by Prisma (leads, contracts, properties)
+prisma/schema.prisma  Contact / Lead / ShedConfig / Contract / Property / StormEvent models
 ```
+
+## Service footprint
+
+Eight regions across Texas and Louisiana, defined once in
+`src/lib/territories.ts`: **West**, **Northeast** and **Southeast Louisiana**,
+and **East**, **North**, **Central**, **South** and **West Texas**. Properties are assigned on
+write, the storm import scopes itself to the footprint's states, the map has a
+jump control, and `/prospects` shows roofs, unworked count, average score and hail
+history per region. Full detail, including how to change the boundaries and the
+Sabine River caveat: [docs/service-footprint.md](docs/service-footprint.md).
+
+## Scoring
+
+Each roof carries a 0–100 score built from roof age, observed hail, ownership
+changes, job size, wind exposure, assessed value and nearby won work, with a
+roofing permit acting as a suppressor rather than a penalty. Missing signals lower
+*confidence* instead of the score, and a score built on thin evidence is damped
+toward a neutral prior so one lucky signal cannot rank an unknown roof above a
+qualified one. Full model, weights and caveats:
+[docs/lead-scoring.md](docs/lead-scoring.md).
 
 The configurator builds a `ShedConfigInput` client-side, renders it with `buildShedMesh()` +
 `Renderer`, and on "Get my quote" POSTs it to `/api/leads`, which atomically creates a `Contact`,
 `Lead` (stage `NEW`, source `CONFIGURATOR`), and `ShedConfig` row — so every 3D session is already
 a tracked CRM lead, not a separate import step. The AR link encodes the same config so it can be
 opened on a phone without a round trip, or `?leadId=` to reload a saved quote's exact config.
+
+## Canvassing → lead
+
+A tap on the map `POST`s to `/api/properties`, which drops a pin (deduplicating
+against any pin already within 30 ft of the same roof) and runs the enrichment
+pipeline: the county parcel layer for the owner of record, Overpass for the OSM
+building footprint and roof tags, Nominatim for the street address. The footprint
+is turned into an actual sloped roof area — pitch inferred from roof shape, plus a
+complexity factor for hips and curves — and priced per square, with surcharges for
+steep pitches, upper storeys and premium materials.
+
+Providers are optional and independent: any of them being unconfigured or down
+leaves the property `PARTIAL` with the reasons recorded, never a failed request.
+An owner name is only ever taken from a parcel record — the pipeline does not
+invent one — and derived placeholder figures never overwrite real data or promote
+a property to `ENRICHED`.
+
+`POST /api/properties/:id/lead` then creates the Contact + Lead (source
+`CANVASSING`) with the roof estimate as its pipeline value, and it shows up on
+`/crm` alongside configurator quotes. Unlike the configurator form, it does not
+require an email or phone — when you are door-knocking you have an address long
+before you have contact details.
+
+### Sweeping a whole block
+
+**Sweep this view** (`POST /api/properties/sweep`) pins every building in the
+visible area in one Overpass query rather than one tap at a time. Most OSM
+buildings carry their own `addr:*` tags, so a sweep usually gets addresses for
+free; it deliberately does *not* geocode or look up owners per building, since
+that would be hundreds of throttled requests. Run the full per-property
+enrichment on the roofs worth pursuing.
+
+Sweeps are safe to repeat: a building's OSM way id is its identity, so re-sweeping
+a block adds only what is new. Proximity de-duplication applies only to
+hand-dropped pins, which have no id — two OSM buildings are two buildings even
+when they share a party wall. Garages, sheds and footprints under 400 sq ft are
+skipped, and the area is capped at 1 sq mi per sweep.
 
 ## Notes on the AR fallback
 
