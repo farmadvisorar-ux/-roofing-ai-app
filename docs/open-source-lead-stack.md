@@ -45,6 +45,7 @@ parcel lookup is simply reported as not configured.
 | `PERMITS_ROOF_KEYWORDS` | `roof,reroof,re-roof,shingle` | What marks a permit as roof work. |
 | `OPEN_METEO_ARCHIVE_URL` | Open-Meteo archive | Point at a self-hosted instance. |
 | `ENRICHMENT_TIMEOUT_MS` | `15000` | Per-request timeout. |
+| `MAX_EXPORT_ROWS` | `10000` | Ceiling on a CSV export. A truncated file says so in its filename. |
 | `PROPERTY_ENRICHMENT_OFFLINE` | *(unset)* | `1` skips the network entirely and uses derived placeholders. Handy for dev and demos. |
 | `NEXT_PUBLIC_TILE_URL` | OSM tiles | Your own tile server, e.g. a self-hosted TileServer GL. |
 | `NEXT_PUBLIC_TILE_ATTRIBUTION` | `© OpenStreetMap contributors` | Attribution shown on the map. |

@@ -4,8 +4,11 @@ import { QueryError, buildOrderBy, buildWhere, parsePropertyQuery } from "@/lib/
 
 export const dynamic = "force-dynamic";
 
-/** Hard ceiling so an unfiltered export can't try to stream the whole table. */
-const MAX_EXPORT_ROWS = 10000;
+/**
+ * Ceiling so an unfiltered export cannot try to stream the whole table.
+ * Configurable because the right number depends on how big the territory is.
+ */
+const MAX_EXPORT_ROWS = Math.max(1, Number(process.env.MAX_EXPORT_ROWS ?? 10000));
 
 const COLUMNS = [
   "id",
@@ -55,13 +58,19 @@ export async function GET(request: NextRequest) {
     throw err;
   }
 
-  const properties = await prisma.property.findMany({
-    where: buildWhere(query),
+  const where = buildWhere(query);
+  // One extra row is enough to tell a full export from a truncated one.
+  const rows = await prisma.property.findMany({
+    where,
     orderBy: buildOrderBy(query),
-    take: MAX_EXPORT_ROWS,
+    take: MAX_EXPORT_ROWS + 1,
   });
 
-  const rows = properties.map((p) => [
+  const truncated = rows.length > MAX_EXPORT_ROWS;
+  const properties = truncated ? rows.slice(0, MAX_EXPORT_ROWS) : rows;
+  const matched = truncated ? await prisma.property.count({ where }) : properties.length;
+
+  const cells = properties.map((p) => [
     p.id,
     p.leadScore,
     p.leadScoreBand,
@@ -94,14 +103,23 @@ export async function GET(request: NextRequest) {
     p.lng,
   ]);
 
-  const csv = [COLUMNS.join(","), ...rows.map((r) => r.map(csvCell).join(","))].join("\r\n");
+  const csv = [COLUMNS.join(","), ...cells.map((r) => r.map(csvCell).join(","))].join("\r\n");
   const stamp = new Date().toISOString().slice(0, 10);
+
+  // A silently short file is worse than no file — someone will work the list
+  // believing it is complete. Say so where they cannot miss it: the filename.
+  const name = truncated
+    ? `prospects-${stamp}-first-${MAX_EXPORT_ROWS}-of-${matched}.csv`
+    : `prospects-${stamp}.csv`;
 
   return new NextResponse(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="prospects-${stamp}.csv"`,
+      "Content-Disposition": `attachment; filename="${name}"`,
       "Cache-Control": "no-store",
+      "X-Export-Rows": String(properties.length),
+      "X-Export-Matched": String(matched),
+      "X-Export-Truncated": String(truncated),
     },
   });
 }

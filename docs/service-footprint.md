@@ -1,6 +1,6 @@
 # The service footprint
 
-The app sells into six regions across Texas and western Louisiana. They are
+The app sells into eight regions across Texas and Louisiana. They are
 defined in one place — `src/lib/territories.ts` — and everything else follows
 from it: which storm data gets imported, how prospects are divided, where the map
 jumps to, and the coverage rollups on the workbench.
@@ -8,6 +8,8 @@ jumps to, and the coverage rollups on the workbench.
 | Territory | States | Hubs |
 | --- | --- | --- |
 | **West Louisiana** | LA | Shreveport, Bossier City, Alexandria, Lake Charles, Natchitoches, Leesville |
+| **Northeast Louisiana** | LA | Tallulah, Lake Providence, Vidalia, St. Joseph, Winnsboro |
+| **Southeast Louisiana** | LA | Baton Rouge, New Orleans, Metairie, Slidell, Hammond, Houma, Thibodaux |
 | **East Texas** | TX | Tyler, Longview, Texarkana, Nacogdoches, Lufkin, Beaumont, Houston |
 | **North Texas** | TX | Dallas, Fort Worth, Denton, Sherman, Wichita Falls, Paris |
 | **Central Texas** | TX | Austin, Round Rock, Georgetown, Waco, Killeen, Temple, San Marcos |
@@ -18,6 +20,11 @@ Central Texas is not one of the four Texas regions usually named, but without it
 Austin, Round Rock and Waco fall in a hole between north and south. It is
 included so the footprint tiles Texas without gaps.
 
+The three Louisiana regions tile the state the same way. West Louisiana runs from
+the Sabine across to the Ouachita — it already covers Monroe and Lafayette —
+while Northeast and Southeast Louisiana cover everything east of it, including
+the Capital Region and Greater New Orleans.
+
 ## How a roof is assigned
 
 `territoryForPoint(point, state)` returns the first region whose bounds contain
@@ -26,8 +33,10 @@ the point, filtered by state when the state is known. Assignment happens in
 enrichment gets a bounding-box guess that the geocoded state later corrects.
 
 Order matters, and is deliberate: East Texas precedes North Texas so Tyler and
-Longview resolve east; West Louisiana precedes both so Shreveport does not land
-in Texas.
+Longview resolve east; the Louisiana regions precede both so Shreveport does not
+land in Texas.
+
+Verified against 52 real city coordinates across all eight regions.
 
 ### The Sabine River caveat
 

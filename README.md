@@ -17,10 +17,10 @@ A shed sales app with three pieces baked into one codebase:
    convertible into a pipeline lead in one step. Or sweep the whole visible block at once and get
    every roof in it pinned and priced, ranked best-first. Built on OpenStreetMap and county parcel
    layers, with a from-scratch tile map rather than a mapping SDK.
-5. **A defined service footprint** — six regions across Texas and western Louisiana (North, East,
-   West, South and Central Texas, plus West Louisiana). Every roof is assigned to one, storm data
-   is imported to match, the map jumps between them, and the workbench shows live coverage per
-   region. See [docs/service-footprint.md](docs/service-footprint.md).
+5. **A defined service footprint** — eight regions across Texas and Louisiana (North, East, West,
+   South and Central Texas; West, Northeast and Southeast Louisiana). Every roof is assigned to
+   one, storm data is imported to match, the map jumps between them, and the workbench shows live
+   coverage per region. See [docs/service-footprint.md](docs/service-footprint.md).
 6. **Buying signals and an explainable score** — roof age against material service life, observed
    NOAA hail near the address, ownership changes, assessed value, wind exposure, and roofing
    permits that suppress a roof already done. Every point is attributable to a named signal, and
@@ -95,9 +95,9 @@ prisma/schema.prisma  Contact / Lead / ShedConfig / Contract / Property / StormE
 
 ## Service footprint
 
-Six regions across Texas and western Louisiana, defined once in
-`src/lib/territories.ts`: **West Louisiana**, **East Texas**, **North Texas**,
-**Central Texas**, **South Texas** and **West Texas**. Properties are assigned on
+Eight regions across Texas and Louisiana, defined once in
+`src/lib/territories.ts`: **West**, **Northeast** and **Southeast Louisiana**,
+and **East**, **North**, **Central**, **South** and **West Texas**. Properties are assigned on
 write, the storm import scopes itself to the footprint's states, the map has a
 jump control, and `/prospects` shows roofs, unworked count, average score and hail
 history per region. Full detail, including how to change the boundaries and the

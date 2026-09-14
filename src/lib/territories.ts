@@ -25,7 +25,12 @@ export interface Territory {
 /**
  * Order is significant: the first territory whose bounds contain a point wins.
  * East Texas precedes North Texas so Tyler and Longview resolve east rather than
- * north, and West Louisiana precedes both so Shreveport does not land in Texas.
+ * north, and the Louisiana regions precede both so Shreveport does not land in
+ * Texas.
+ *
+ * The three Louisiana regions tile the state: West Louisiana runs from the Sabine
+ * across to the Ouachita, and Northeast and Southeast Louisiana cover everything
+ * east of it.
  */
 export const TERRITORIES: Territory[] = [
   {
@@ -36,6 +41,26 @@ export const TERRITORIES: Territory[] = [
     center: { lat: 31.2, lng: -92.9 },
     zoom: 8,
     hubs: ["Shreveport", "Bossier City", "Alexandria", "Lake Charles", "Natchitoches", "Leesville"],
+  },
+  {
+    id: "northeast-louisiana",
+    name: "Northeast Louisiana",
+    states: ["LA"],
+    // The Delta parishes along the Mississippi, east of the Ouachita.
+    bounds: { minLat: 31.4, minLng: -91.8, maxLat: 33.05, maxLng: -90.9 },
+    center: { lat: 32.2, lng: -91.35 },
+    zoom: 9,
+    hubs: ["Tallulah", "Lake Providence", "Vidalia", "St. Joseph", "Winnsboro"],
+  },
+  {
+    id: "southeast-louisiana",
+    name: "Southeast Louisiana",
+    states: ["LA"],
+    // The Capital Region, Northshore, Greater New Orleans and the bayou parishes.
+    bounds: { minLat: 28.85, minLng: -91.8, maxLat: 31.4, maxLng: -88.75 },
+    center: { lat: 30.2, lng: -90.4 },
+    zoom: 9,
+    hubs: ["Baton Rouge", "New Orleans", "Metairie", "Slidell", "Hammond", "Houma", "Thibodaux"],
   },
   {
     id: "east-texas",

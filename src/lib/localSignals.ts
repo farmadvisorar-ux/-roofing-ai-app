@@ -18,6 +18,26 @@ const HAIL_SEARCH_RADIUS_MI = Number(process.env.HAIL_SEARCH_RADIUS_MI ?? 10);
  */
 const HAIL_WINDOW_YEARS = Number(process.env.HAIL_WINDOW_YEARS ?? 5);
 
+/**
+ * Whether any storm reports have been imported at all. Checked once rather than
+ * once per property: a sweep scores hundreds of roofs in a loop, and each was
+ * paying for a separate round trip just to ask whether the table was empty.
+ * Cleared by the importers, which are separate processes, so this only has to
+ * survive within a single server lifetime.
+ */
+let stormDataPresent: boolean | null = null;
+
+export function resetStormDataCache(): void {
+  stormDataPresent = null;
+}
+
+async function hasStormData(): Promise<boolean> {
+  if (stormDataPresent === null) {
+    stormDataPresent = (await prisma.stormEvent.findFirst({ select: { id: true } })) !== null;
+  }
+  return stormDataPresent;
+}
+
 /** Won work this close is genuine social proof on the doorstep. */
 const NEIGHBOUR_RADIUS_MI = Number(process.env.NEIGHBOUR_RADIUS_MI ?? 0.5);
 
@@ -40,8 +60,7 @@ export interface HailExposure {
  * which the scoring model treats very differently from "no hail here".
  */
 export async function hailExposure(point: GeoPoint): Promise<HailExposure | null> {
-  const anyImported = await prisma.stormEvent.findFirst({ select: { id: true } });
-  if (!anyImported) return null;
+  if (!(await hasStormData())) return null;
 
   const since = new Date();
   since.setFullYear(since.getFullYear() - HAIL_WINDOW_YEARS);

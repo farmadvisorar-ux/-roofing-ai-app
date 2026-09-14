@@ -74,7 +74,7 @@ export default function ProspectsWorkbench() {
       search: debouncedSearch || undefined,
       band: band || undefined,
       status: status || undefined,
-      unworked: worked === "unworked" ? true : undefined,
+      unworked: worked === "" ? undefined : worked === "unworked",
       minScore: minScore ? Number(minScore) : undefined,
       territory: territory || undefined,
       sort,
@@ -150,9 +150,9 @@ export default function ProspectsWorkbench() {
     };
   }, [openId]);
 
-  const rows = data?.properties ?? [];
-  // "Worked" is a client-side view of the same rows; the API filters unworked.
-  const visible = worked === "worked" ? rows.filter((r) => r.leadId) : rows;
+  // Every filter is applied server-side. Narrowing a page client-side would make
+  // the row count, the pager and the CSV export disagree with each other.
+  const visible = data?.properties ?? [];
   const allSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
   const someSelected = visible.some((r) => selected.has(r.id));
 
@@ -323,7 +323,7 @@ export default function ProspectsWorkbench() {
               </tr>
             </thead>
             <tbody>
-              {loading && rows.length === 0 && (
+              {loading && visible.length === 0 && (
                 <tr>
                   <td colSpan={9} className="px-3 py-10 text-center text-neutral-500">
                     Loading prospects…

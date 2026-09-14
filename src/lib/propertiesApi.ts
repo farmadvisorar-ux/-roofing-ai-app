@@ -66,7 +66,8 @@ export function propertyQueryParams(options: PropertyQueryOptions = {}): URLSear
     params.set("maxLat", String(options.bbox.maxLat));
     params.set("maxLng", String(options.bbox.maxLng));
   }
-  if (options.unworked) params.set("unworked", "1");
+  // Explicitly false is a real filter ("already leads"), not an absent one.
+  if (options.unworked !== undefined) params.set("unworked", options.unworked ? "1" : "0");
   if (options.band) params.set("band", options.band);
   if (options.status) params.set("status", options.status);
   if (options.minScore !== undefined) params.set("minScore", String(options.minScore));
